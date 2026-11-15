@@ -72,7 +72,8 @@ const S = {
   muted: Array(NI).fill(false), pulse: Array(NI).fill(0), accent: Array(NI).fill(false), lastAccent: Array(NI).fill(-1e9),
   events: [], yr: 5, showScore: true,
   inst: null, timp: null, drum: null,
-  aiDir: null, aiMood: null, aiRow: -1e9, aiText: '', aiBusy: false, aiFails: 0, aiLog: [],
+  aiDir: null, aiMood: null, aiRow: -1e9, aiText: '', aiInflight: 0, aiPending: new Set(), aiLat: 8, aiFails: 0, aiLog: [],
+  aiCache: new Map(),   // Gemini's plans for upcoming phrases: data row → { dir, mood, text }
 };
 
 // ---------------- helpers ----------------
@@ -194,6 +195,7 @@ function currencyStats(name, p) {
 function applyView(b) {
   S.view = b;
   S.cur = S.raw.map((p, c) => currencyStats(S.names[c], b < 0 ? p : p.map((x, i) => x / S.raw[b][i])));
+  S.aiCache = new Map(); S.ver = (S.ver || 0) + 1;   // Gemini's plans were made from the old point of view
   const label = b < 0 ? 'the world basket' : S.names[b];
   setStatus(`👀 Viewing every currency from ${label}${b >= 0 ? ` (${S.names[b]} itself is the flat line)` : ''}`);
 }
@@ -244,6 +246,8 @@ function prepare({ names, prices, dates = [], mode = 'generic' }) {
   S.dir = null; S.on = { horn: false, timp: false, drum: false };
   S.last = Array(NI).fill(null); S.why = Array(NI).fill(null); S.lastAccent = Array(NI).fill(-1e9);
   S.aiDir = null; S.aiMood = null; S.aiText = ''; S.aiLog = []; S.aiFails = 0; S.aiRetryAt = 0; S.events = [];
+  S.aiPending = new Set(); S.ver = (S.ver || 0) + 1;
+  S.aiCache = new Map();
   S.ready = true;
   buildSeating(); buildViewMenu();
   $('jump').disabled = !dates.length;
@@ -344,15 +348,15 @@ function moveWord(k, i) {
 // =====================================================
 function onBar(i) {
   // world tension (smoothed): maths, blended with Gemini's mood when it's fresh
-  const aiFresh = S.aiMood !== null && Math.abs(i - S.aiRow) < 64 * S.stride;
-  const target = aiFresh ? 0.5 * S.world[i] + 0.5 * S.aiMood : S.world[i];
-  S.Ws += 0.2 * (target - S.Ws);
-
   // new phrase every 4 bars → the conductor decides its character
   if (S.bar % 4 === 0) {
-    const useAI = S.aiDir && Math.abs(i - S.aiRow) < 64 * S.stride;
-    setDirection(useAI ? S.aiDir : fallbackDirection(S.Ws));
+    const plan = cachedAI(i);                                          // did Gemini already plan this moment?
+    if (plan) { S.aiDir = plan.dir; S.aiMood = plan.mood; S.aiText = plan.text; S.aiRow = i; S.aiTextDate = S.dates[i] || ''; }
   }
+  const aiFresh = S.aiMood !== null && Math.abs(i - S.aiRow) < 32 * S.stride;
+  const target = aiFresh ? 0.5 * S.world[i] + 0.5 * S.aiMood : S.world[i];
+  S.Ws += 0.2 * (target - S.Ws);
+  if (S.bar % 4 === 0) setDirection(aiFresh && S.aiDir ? S.aiDir : fallbackDirection(S.Ws));
   S.numeral = PROGRESSIONS[S.dir.prog][S.bar % 4];
   S.chord = chordPcs(keyOf(), S.numeral);
   S.bar++;
@@ -490,19 +494,48 @@ function onStep(time) {
 
     S.step++;
     S.idx = (i + S.stride) % S.n;
-    if (S.step % 32 === 8) askAI(S.idx);                               // ask Gemini about the NEXT phrase
+    prefetchAI();
   } catch (e) {
     console.error(e);
   }
 }
 
+// The data is history, so we can read AHEAD like a conductor reading the score:
+// keep Gemini working on the next few phrases, so its plan is ready before each phrase begins.
+function cachedAI(row) {
+  let best = null, bd = Infinity;
+  for (const [r, v] of S.aiCache) { const d = Math.abs(r - row); if (d < bd) { bd = d; best = v; } }
+  return bd <= 16 * S.stride ? best : null;
+}
+function prefetchAI() {
+  if (!S.ready) return;
+  if (location.protocol === 'file:') { if (S.step % 32 === 1) setAI('🤖 Conductor offline — run "python app.py" and open http://localhost:5050'); return; }
+  if (S.aiInflight >= 2 || Date.now() < (S.aiRetryAt || 0)) return;  // at most 2 questions at once
+  const phraseRows = 32 * S.stride;
+  const stepsLeft = (32 - (S.step % 32)) % 32;                         // eighth notes until the next phrase starts
+  const nextStart = S.idx + stepsLeft * S.stride;                      // data row where the next phrase begins
+  const bpm = Tone.Transport.bpm.value || 76;
+  for (let k = 0; k < 4; k++) {                                        // look up to 4 phrases ahead
+    const row = (nextStart + k * phraseRows) % S.n;
+    if (cachedAI(row) || S.aiPending.has(row)) continue;
+    // while playing, skip phrases Gemini can't finish in time (it has been taking ~S.aiLat seconds)
+    const secsUntil = (stepsLeft + 32 * k) * 30 / bpm;
+    if (S.playing && secsUntil < S.aiLat * 1.2) continue;
+    askAI(row);
+    return;
+  }
+}
+// keep reading ahead even while paused (e.g. right after loading the CSV, before you press Play)
+setInterval(prefetchAI, 1000);
+
+
 // =====================================================
 // AI CONDUCTOR — Gemini chooses the character of the next phrase (needs: python app.py)
 // =====================================================
 async function askAI(i) {
-  if (location.protocol === 'file:') { setAI('🤖 Conductor offline — run "python app.py" and open http://localhost:5050'); return; }
-  if (S.aiBusy || S.step < (S.aiRetryAt || 0)) return;
-  S.aiBusy = true;
+  S.aiInflight++; S.aiPending.add(i);
+  const t0 = Date.now(), ver = S.ver;
+  setAI(`📖 Gemini is reading ahead in the score (planning ${S.dates[i] || 'the next phrase'})…`);
   const snapshot = {
     date: S.dates[i] || `step ${i}`,
     note: S.view >= 0
@@ -524,20 +557,23 @@ async function askAI(i) {
     const res = await fetch('/api/analyse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snapshot) });
     const out = await res.json();
     if (!res.ok) throw new Error(out.error || res.status);
-    S.aiMood = clamp(+out.mood || 0, 0, 1); S.aiRow = i;
-    S.aiDir = sanitizeDirection(out);
-    S.aiText = `${out.headline} — ${out.commentary}`;
-    S.aiLog.push({ date: snapshot.date, mood: S.aiMood, character: S.aiDir.character, headline: out.headline, commentary: out.commentary });
+    if (ver !== S.ver) return;                                  // answer belongs to old data / old view
+    const plan = { dir: sanitizeDirection(out), mood: clamp(+out.mood || 0, 0, 1), text: `${out.headline} — ${out.commentary}` };
+    S.aiCache.set(i, plan);
+    S.aiLat = 0.7 * S.aiLat + 0.3 * ((Date.now() - t0) / 1000);   // how long Gemini usually takes
+    if (S.aiCache.size > 300) S.aiCache.delete(S.aiCache.keys().next().value);   // keep memory small
+    S.aiLog.push({ date: snapshot.date, mood: plan.mood, character: plan.dir.character, headline: out.headline, commentary: out.commentary });
     S.aiFails = 0; S.aiRetryAt = 0;
-    setAI(`🤖 Gemini conductor (${snapshot.date}): next phrase ${S.aiDir.character}${out.model ? ` · ${out.model}` : ''}`);
+    const ahead = [...S.aiCache.keys()].filter(r => r > S.idx).length;
+    setAI(`📖 Gemini is reading ahead in the score — ${ahead} upcoming phrase${ahead === 1 ? '' : 's'} planned (up to ${snapshot.date})${out.model ? ` · ${out.model}` : ''}`);
   } catch (e) {
     S.aiFails++;
     // never give up for good: wait a little longer after each failure (1, 2, 3… phrases, max 4), then try again
-    S.aiRetryAt = S.step + 32 * Math.min(S.aiFails, 4);
+    S.aiRetryAt = Date.now() + 5000 * Math.min(S.aiFails, 6);   // wait 5 s, 10 s, … (max 30 s) before asking again
     const busy = /503|429|busy|high demand/i.test(e.message);
     setAI(`🤖 ${busy ? 'Gemini is busy right now' : 'AI error: ' + e.message.slice(0, 160)} — using maths, will try again shortly`);
   } finally {
-    S.aiBusy = false;
+    S.aiInflight--; S.aiPending.delete(i);
   }
 }
 
@@ -588,7 +624,23 @@ $('jump').onchange = e => {
   if (j >= 0) S.idx = j; else setStatus('That date is not in this data.');
 };
 
-$('demoBtn').onclick = () => prepare(demoData());
+// Load the latest ECB exchange rates automatically (the server downloads them, refreshed every 12 h)
+async function loadECB() {
+  if (location.protocol === 'file:') return;           // needs the Python server
+  setStatus('🌍 Getting the latest exchange rates from the European Central Bank…');
+  try {
+    const res = await fetch('/api/ecb');
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+    prepare(parseCSV(await res.text()));
+    setStatus(`🌍 ECB data ready (${res.headers.get('X-Data-Note')}, ${res.headers.get('X-Data-Updated')}) · ` +
+      `${S.n} days · ${S.cur.length} currencies · ${S.dates[0]} → ${S.dates[S.n - 1]}`);
+  } catch (e) {
+    setStatus(`Couldn't get ECB data (${e.message}) — use Load CSV or Demo data instead.`);
+  }
+}
+$('ecbBtn').onclick = () => { if (S.playing) $('playBtn').click(); loadECB(); };
+loadECB();                                              // happens by itself when the page opens
+
 $('fileInput').onchange = e => {
   const f = e.target.files[0]; if (!f) return;
   const r = new FileReader();
@@ -596,7 +648,10 @@ $('fileInput').onchange = e => {
   r.readAsText(f);
 };
 $('playBtn').onclick = async () => {
-  if (!S.ready) prepare(demoData());
+  if (!S.ready) {
+    if (location.protocol !== 'file:') return setStatus('⏳ Still loading the exchange rates — try again in a moment.');
+    prepare(demoData());                               // opened without the server → practice with fake data
+  }
   await Tone.start();                                // browsers only allow sound after a click
   if (!S.inst) setupAudio();
   if (S.playing) { Tone.Transport.pause(); S.playing = false; $('playBtn').textContent = '▶ Play'; }
@@ -632,7 +687,7 @@ function updateScore() {
   const d = S.dir;
   $('scoreHead').innerHTML =
     `<b>${d.character}</b> · ${keyOf().name} · ${d.tempo} (${TEMPI[d.tempo]} bpm) · <i>${d.dyn}</i><br>` +
-    `<span class="src">${d.source === 'Gemini' ? '🤖 Gemini' : '🧮 Maths'}: ${d.reason}</span><br>` +
+    `<span class="src">${d.source === 'Gemini' ? `🤖 Gemini (plan for ${S.aiTextDate || 'this phrase'})` : '🧮 Maths (Gemini\'s plan not ready yet)'}: ${d.reason}</span><br>` +
     `Progression <b>${d.prog}</b> · bar ${((S.bar - 1) % 4) + 1}/4 · chord <b>${S.numeral}</b> = ${chordName()}`;
   $('scoreRows').innerHTML = INSTRUMENTS.map((def, k) => {
     const w = S.why[k], cur = S.cur[S.assign[k]]?.name || '';
@@ -653,14 +708,14 @@ function windowResized() { resizeCanvas(windowWidth, windowHeight); }
 
 function draw() {
   background(lerpColor(color('#0b1020'), color('#2a0d18'), S.ready ? S.Ws * 0.8 : 0));
-  const x0 = width > 900 ? 350 : 20, x1 = width - 120 - (S.showScore && width > 1100 ? 330 : 0);
+  const x0 = width > 900 ? 385 : 50, x1 = width - 130 - (S.showScore && width > 1100 ? 330 : 0);
   const top = 100, bot = height * 0.62;                  // main graph
   const wTop = height * 0.67, wBot = height * 0.80;      // world tension panel
 
   noStroke(); fill(255); textAlign(CENTER); textSize(28);
   const cx = (x0 + x1) / 2;
   text(S.ready && S.dates[S.idx] ? S.dates[S.idx] : 'Currency Symphony', cx, 50);
-  if (!S.ready) { textSize(16); text('Press ▶ Play for demo data, or load the ECB CSV', cx, height / 2); return; }
+  if (!S.ready) { textSize(16); text('Loading the latest exchange rates…', cx, height / 2); return; }
   if (frameCount % 8 === 0) updateScore();
 
   const i = S.idx, a = Math.max(0, i - VIEW_ROWS);
@@ -732,9 +787,10 @@ function draw() {
   S.events.forEach((e, j) => { fill(255, 230, 160, map(e.until - now, 0, 800, 0, 255, true)); text(e.text, x1, 100 + j * 20); });
 
   // ---- Gemini's commentary ----
-  if (S.aiText) {
+  // only show Gemini's words while the phrase you're hearing really is Gemini's plan
+  if (S.aiText && S.dir && S.dir.source === 'Gemini') {
     fill(255, 235, 200); textSize(15); textAlign(LEFT); noStroke();
-    text(`🤖 ${S.aiText}`, x0, height * 0.84, x1 - x0, 50);
+    text(`🤖 Gemini on ${S.aiTextDate}: ${S.aiText}`, x0, height * 0.84, x1 - x0, 50);
   }
 
   // ---- whole-history overview + playhead ----

@@ -17,9 +17,14 @@
 
     <div class="row">
       <button id="playBtn">▶ Play</button>
-      <button id="demoBtn">Demo data</button>
-      <label class="file">Load CSV<input id="fileInput" type="file" accept=".csv,.txt"></label>
     </div>
+    <details class="datasrc">
+      <summary>Data source</summary>
+      <div class="row">
+        <button id="ecbBtn" title="Latest European Central Bank rates (loads automatically)">🌍 Latest ECB</button>
+        <label class="file">Load CSV<input id="fileInput" type="file" accept=".csv,.txt"></label>
+      </div>
+    </details>
 
     <div class="row">
       <label>Jump to
@@ -43,7 +48,7 @@
       <button id="scoreBtn">🎼 Hide score</button>
     </div>
 
-    <p id="status">Press ▶ Play for demo data, or load the ECB CSV.</p>
+    <p id="status">Loading the latest exchange rates…</p>
     <p id="aiStatus"></p>
   </div>
 

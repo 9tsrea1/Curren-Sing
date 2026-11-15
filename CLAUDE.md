@@ -26,6 +26,7 @@ ECB rates are "per 1 EUR", so `prepare()` converts every currency (plus EUR itse
 ### How the music is composed (classical engine, rebuilt Sat ~22:45 — every note must be explainable)
 - **Conductor** picks a *character* per 4-bar phrase: Pastorale · Cantabile · Misterioso · Agitato · Grandioso → key (C major / A harmonic minor), tempo marking (Adagio…Presto), dynamics (p…ff), chord progression (e.g. I–IV–V–I, i–iv–V–i). **Gemini decides this** via `/api/analyse` (asked mid-phrase, applied at the next phrase); maths fallback (`fallbackDirection`) when offline. `sanitizeDirection()` validates Gemini's JSON.
 - **One chord per bar**, phrases end in cadences. Instruments: violin melody & flute answer = strong beats land on a chord tone near where the currency sits in its 3-month range (max leap 7 semitones), weak beats move one scale step towards it; cello holds 3rd/5th with smooth voice-leading; double bass plays root/5th; piano = Alberti bass when calm, repeated chords when tense; harp arpeggio up/down with the currency's trend; horns when tense; timpani tuned to tonic & dominant; deep drum only in Grandioso.
+- **Gemini reads ahead**: `prefetchAI()` keeps asking Gemini about the data rows where the next 1–3 phrases will start (one request at a time), storing plans in `S.aiCache`; `onBar` uses the plan for the current phrase start if present, else maths. Cache is cleared on new data / view change. Server (`app.py`) tries GEMINI_MODEL then GEMINI_FALLBACK_MODELS from `.env` (currently gemini-3.5-flash-lite first; 3.8-flash was overloaded), skipping busy (429/503) models instantly, 15 s timeout, thinkingLevel "low". `gemini_test.py` diagnoses keys/models/latency.
 - `S.why[k]` stores the note + plain-English reason; the **Score panel** (right side, toggle "🎼 Hide score") shows conductor choice, progression, current chord, and each instrument's note + reason.
 - Gillian found the earlier free-scale version "weird" — keep it classical (functional harmony, voice-leading, cadences).
 
@@ -39,6 +40,7 @@ Rules (Gillian's design — keep them):
 - She explicitly **did not want** the earlier storm/weather/thunder concept, nor the circle-per-currency view — don't bring them back.
 - Practical framing for judges: *sonification* — hear the state of world markets; accessibility; early awareness.
 
+Data is **loaded automatically**: `GET /api/ecb` in app.py downloads the ECB zip, extracts it to `data/eurofxref-hist.csv` (gitignored), refreshes at most every 12 h, falls back to the cached copy; `loadECB()` in main.js calls it on page load and via the "🌍 Latest ECB" button. "Load CSV" and "Demo data" still exist.
 Data: **European Central Bank daily reference rates** (rates per 1 EUR, 1999 → today), `eurofxref-hist.csv` from https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip — put it in `data/`. SGX FX's own data couldn't be found; their brief allows any data. File is newest-first and has `N/A` values — `parseCSV()`/`prepare()` already handle that. Demo moments: 2008 crash, Euro crisis 2011, **Brexit vote June 2016**, COVID March 2020, 2022 (the "Jump to" menu).
 
 ## Code layout

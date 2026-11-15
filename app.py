@@ -1,6 +1,7 @@
 """Currency Symphony — small Python server.
 
 - Serves the website
+- /api/ecb         → latest ECB exchange-rate history (downloaded automatically, cached 12 h in data/)
 - /api/analyse     → asks Gemini how stressed the world currency market is
 - /api/performances → saves / lists performances in MongoDB Atlas
 
@@ -8,13 +9,15 @@ Run:  python app.py   →  open http://localhost:5050
 (Port 5050, because macOS AirPlay already uses 5000.)
 """
 import datetime
+import io
 import json
 import os
 import time
+import zipfile
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 from pymongo import MongoClient
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +38,37 @@ performances = MongoClient(uri)["hackathon"]["performances"] if uri else None
 @app.get("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
+
+
+# ---------- ECB data: downloaded automatically, refreshed at most every 12 hours ----------
+ECB_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip"
+DATA_DIR = os.path.join(HERE, "data")
+ECB_CSV = os.path.join(DATA_DIR, "eurofxref-hist.csv")
+
+
+@app.get("/api/ecb")
+def ecb_data():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    fresh = os.path.exists(ECB_CSV) and time.time() - os.path.getmtime(ECB_CSV) < 12 * 3600
+    note = "cached copy"
+    if not fresh:
+        try:
+            r = requests.get(ECB_URL, timeout=30)
+            r.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+                name = next(n for n in z.namelist() if n.lower().endswith(".csv"))
+                with open(ECB_CSV, "wb") as f:
+                    f.write(z.read(name))
+            note = "downloaded just now"
+        except Exception as e:
+            if not os.path.exists(ECB_CSV):                     # no internet and no old copy → tell the page
+                return jsonify(error=f"Could not download ECB data: {e}"), 502
+            note = "older copy (download failed)"
+    with open(ECB_CSV, encoding="utf-8") as f:
+        resp = Response(f.read(), mimetype="text/csv")
+    resp.headers["X-Data-Note"] = note
+    resp.headers["X-Data-Updated"] = datetime.datetime.fromtimestamp(os.path.getmtime(ECB_CSV)).strftime("%Y-%m-%d %H:%M")
+    return resp
 
 
 @app.post("/api/analyse")
@@ -61,23 +95,27 @@ def analyse():
     )
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4},
+        # thinkingLevel "low": this is a quick decision, so don't let the model think for ages
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4,
+                             "thinkingConfig": {"thinkingLevel": "low"}},
     }
     last_error = "unknown error"
     # try the main model (twice), then any backup models — Google is sometimes overloaded (503) or rate-limited (429)
     for model in [GEMINI_MODEL] + GEMINI_FALLBACKS:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                     headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"},
                     json=body,
-                    timeout=20,
+                    timeout=15,
                 )
-                if r.status_code in (429, 500, 503):            # busy → wait a moment and retry
-                    last_error = f"{r.status_code} Google is busy ({model})"
-                    time.sleep(1.5)
+                if r.status_code == 400 and "thinking" in r.text.lower():   # model doesn't support it → drop it
+                    body["generationConfig"].pop("thinkingConfig", None)
                     continue
+                if r.status_code in (429, 500, 503):            # busy → don't wait, go straight to the next model
+                    last_error = f"{r.status_code} Google is busy ({model})"
+                    break
                 r.raise_for_status()
                 text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                 out = json.loads(text)
