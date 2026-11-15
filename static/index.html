@@ -50,6 +50,7 @@
       <button id="saveBtn">💾 Save performance</button>
       <button id="scoreBtn">🎼 Hide score</button>
       <button id="narrBtn" title="ElevenLabs reads Gemini's commentary aloud at the start of each phrase">🎙 Narrator: on</button>
+      <button id="galleryBtn" title="Saved performances (MongoDB Atlas)">📚 Gallery</button>
     </div>
     <div class="row">
       <label>🎙 Narrator volume <span id="narrVolVal">45%</span>
@@ -61,6 +62,16 @@
     <p id="status">Loading the latest exchange rates…</p>
     <p id="aiStatus"></p>
     <p id="narrStatus"></p>
+  </div>
+
+  <!-- saved performances (opened with 📚 Gallery) -->
+  <div id="gallery" hidden>
+    <div class="ghead">
+      <h2>📚 Gallery — saved performances</h2>
+      <button id="galleryClose" title="Close">✕</button>
+    </div>
+    <p id="galleryNote" class="hint"></p>
+    <div id="galleryList"></div>
   </div>
 
   <div id="score">

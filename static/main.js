@@ -773,13 +773,108 @@ $('viewFrom').onchange = e => { if (S.ready) applyView(+e.target.value); };
 JUMPS.forEach(([label, date]) => {
   const o = document.createElement('option'); o.value = date || ''; o.textContent = label; $('jump').appendChild(o);
 });
-$('jump').onchange = e => {
-  if (!S.ready) return;
-  const v = e.target.value;
-  if (!v) { S.idx = 0; return; }
+// move the playhead to the first data row on/after a date ('' = the start); returns true if found
+function jumpToDate(v) {
+  if (!v) { S.idx = 0; return true; }
   const t = Date.parse(v), j = S.dates.findIndex(d => Date.parse(d) >= t);
-  if (j >= 0) S.idx = j; else setStatus('That date is not in this data.');
+  if (j >= 0) { S.idx = j; return true; }
+  setStatus('That date is not in this data.');
+  return false;
+}
+$('jump').onchange = e => { if (S.ready) jumpToDate(e.target.value); };
+
+
+// =====================================================
+// GALLERY — saved performances from MongoDB Atlas (or this laptop, while MongoDB is unreachable)
+// =====================================================
+const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const instByLabel = label => INSTRUMENTS.findIndex(d => d.label === label);
+let galleryItems = [];
+
+async function openGallery() {
+  $('gallery').hidden = false;
+  $('galleryNote').textContent = 'Loading…';
+  $('galleryList').innerHTML = '';
+  if (location.protocol === 'file:') { $('galleryNote').textContent = 'The gallery needs the Python server: run "python app.py" and open http://localhost:5050'; return; }
+  try {
+    const res = await fetch('/api/performances');
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || res.status);
+    galleryItems = out.items || [];
+    $('galleryNote').textContent = (out.mongodb ? '☁️ Connected to MongoDB Atlas' : '⚠️ MongoDB isn\'t reachable on this network — showing the copies saved on this laptop')
+      + ` · ${galleryItems.length} performance${galleryItems.length === 1 ? '' : 's'}`;
+    $('galleryList').innerHTML = galleryItems.length ? galleryItems.map(galleryCard).join('')
+      : '<p class="hint">Nothing saved yet — press 💾 Save performance while the music plays.</p>';
+  } catch (e) {
+    $('galleryNote').textContent = `⚠️ Could not load the gallery: ${e.message}`;
+  }
+}
+
+function galleryCard(p, n) {
+  const when = p.createdAt ? new Date(p.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
+  const seats = [...(p.seating || []).filter(s => !s.removed), ...(p.guests || [])].map(s => {
+    const def = INSTRUMENTS[instByLabel(s.instrument)];
+    return `<span${s.muted ? ' style="opacity:.45"' : ''}><span class="sdot" style="background:${def ? def.color : '#888'}"></span>${esc(s.instrument)} → ${esc(s.currency)}</span>`;
+  }).join(' · ');
+  const headline = (p.ai || []).find(a => a.headline)?.headline;
+  return `<div class="gitem">
+    <div class="gtitle">${esc(p.title || 'Untitled performance')}</div>
+    <div class="gmeta">Saved ${esc(when)} · music at ${esc(p.at || '—')} · viewed from ${esc(p.viewFrom === 'world' || !p.viewFrom ? 'the world' : p.viewFrom)}</div>
+    <div class="gseat">${seats || '—'}</div>
+    ${headline ? `<div class="gline">🤖 “${esc(headline)}”</div>` : ''}
+    <div class="gfoot">
+      ${p.local ? '<span class="badge" title="Saved on this laptop; uploads to MongoDB automatically when it can">⏳ waiting to upload</span>' : '<span></span>'}
+      <button data-replay="${n}">▶ Replay</button>
+    </div>
+  </div>`;
+}
+
+// put the orchestra back the way it was saved, then play from that date
+function replayPerformance(p) {
+  if (!S.ready) return setStatus('Load data first, then replay.');
+  const missing = new Set();
+  const curIdx = name => { const j = S.names.indexOf(name); if (j < 0) missing.add(name); return j; };
+
+  // 1. point of view (this rebuilds S.cur, so it comes first)
+  const view = !p.viewFrom || p.viewFrom === 'world' ? -1 : curIdx(p.viewFrom);   // -1 if not in this data → world view
+  if (view !== S.view) applyView(view);
+  $('viewFrom').value = view;
+
+  // 2. the seven main seats: instrument sound, currency, removed/muted
+  (p.seating || []).slice(0, INSTRUMENTS.length).forEach((s, k) => {
+    const t = instByLabel(s.instrument), c = curIdx(s.currency);
+    if (t >= 0) S.voice[k] = t;
+    if (c >= 0) S.assign[k] = c;
+    S.removed[k] = !!s.removed;
+    S.muted[k] = !!s.muted || !!s.removed;
+    S.last[k] = null; S.why[k] = null;
+  });
+  if (S.removed.every(r => r) && !(p.guests || []).length) { S.removed[0] = false; S.muted[0] = false; }  // someone must play
+
+  // 3. guest musicians
+  S.extra = (p.guests || []).slice(0, 8).map(g => ({ type: instByLabel(g.instrument), cur: curIdx(g.currency), muted: !!g.muted }))
+    .filter(g => g.type >= 0 && g.cur >= 0)
+    .map(g => ({ ...g, pulse: 0, why: null, last: null }));
+  buildSeating();
+
+  // 4. the date, then press play
+  const found = jumpToDate(p.at || '');
+  if (!found) S.idx = 0;
+  $('gallery').hidden = true;
+  if (!S.playing) $('playBtn').click();
+  setStatus(`▶ Replaying "${p.title || 'performance'}"${p.at ? ` from ${p.at}` : ''}`
+    + (missing.size ? ` — ${[...missing].join(', ')} not in this data, kept the current seat` : '')
+    + (found ? '' : ' (its date is not in this data, starting from the beginning)'));
+  event(`📚 Replaying "${p.title || 'performance'}"`);
+}
+
+$('galleryBtn').onclick = () => { if ($('gallery').hidden) openGallery(); else $('gallery').hidden = true; };
+$('galleryClose').onclick = () => { $('gallery').hidden = true; };
+$('galleryList').onclick = e => {
+  const b = e.target.closest('[data-replay]');
+  if (b) replayPerformance(galleryItems[+b.dataset.replay]);
 };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('gallery').hidden = true; });
 
 // Load the latest ECB exchange rates automatically (the server downloads them, refreshed every 12 h)
 async function loadECB() {
