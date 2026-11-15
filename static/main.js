@@ -1,4 +1,4 @@
-/* 🎻 Currency Symphony (working name)
+/* 🎻 Curren-Sing — the world's currencies, played by an orchestra
 
    HOW THE MUSIC IS MADE — every note can be explained:
    1. CONDUCTOR (Gemini, or maths if offline) looks at the whole world every phrase (4 bars) and picks
@@ -714,7 +714,7 @@ function draw() {
 
   noStroke(); fill(255); textAlign(CENTER); textSize(28);
   const cx = (x0 + x1) / 2;
-  text(S.ready && S.dates[S.idx] ? S.dates[S.idx] : 'Currency Symphony', cx, 50);
+  text(S.ready && S.dates[S.idx] ? S.dates[S.idx] : 'Curren-Sing', cx, 50);
   if (!S.ready) { textSize(16); text('Loading the latest exchange rates…', cx, height / 2); return; }
   if (frameCount % 8 === 0) updateScore();
 

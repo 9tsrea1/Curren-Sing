@@ -6,7 +6,7 @@
 - **Submission deadline ≈ Sunday 15 Nov 12:00** (Devpost). Feature freeze ~09:30 Sunday; last 2 hours = polish, demo video, Devpost write-up.
 - Planning notes live outside the repo in iCloud: `~/Library/Mobile Documents/com~apple~CloudDocs/notvault/01_vie/time_sens/Durhack/` (prize list + step plan .md files). The step plan there is from an earlier "storm" version — the idea has since changed (see below).
 
-## The project: "Currency Symphony" (working name — final name decided at the end)
+## The project: **"Curren-Sing"** (final name, chosen by Gillian: currency + sing)
 Theme of DurHack 2026: **COMPOSITION** (mix art, music and tech; judged on Creativity & Innovation · Technical Execution · Research & Learning · Polish).
 
 Each world currency is an instrument in an orchestra. **Default seating** (user can change it in the "Orchestra seating" panel — any currency in the file → any instrument):

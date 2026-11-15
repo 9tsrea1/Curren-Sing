@@ -1,4 +1,6 @@
-# 🎻 Currency Symphony (working name)
+# 🎻 Curren-Sing
+
+*The world's currencies, played by an orchestra.*
 
 Each world currency is an instrument in an orchestra (USD violin, GBP cello, JPY flute, CHF harp, AUD French horn, CAD double bass). Each melody follows its currency's price; a currency in a bad place plays louder. Gemini judges the condition of the whole world — when it's bad, the symphony turns faster, minor-key and more magnificent (horns + timpani).
 

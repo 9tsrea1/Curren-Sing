@@ -1,4 +1,4 @@
-"""Currency Symphony — small Python server.
+"""Curren-Sing — small Python server.
 
 - Serves the website
 - /api/ecb         → latest ECB exchange-rate history (downloaded automatically, cached 12 h in data/)
