@@ -1,0 +1,56 @@
+which document are we in
+
+---
+
+in folder "durhack", Read CLAUDE.md first. Add an ElevenLabs narrator: a /api/narrate endpoint in app.py that turns text into speech using ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID from .env (cache the mp3 in data/narration/ so the same text isn't paid for twice). In static/main.js, when a phrase starts using Gemini's plan, speak Gemini's commentary quietly over the music, never overlapping two clips, with a 🎙 Narrator on/off button in the panel. If ElevenLabs fails, the music must keep playing. Then update CLAUDE.md.
+
+---
+
+Read CLAUDE.md first. Add a "📚 Gallery" button to the panel that opens a list of saved performances from GET /api/performances (it returns {items, mongodb}). Show each one's title, date, seating (instrument → currency) and the first Gemini headline, and mark ones that are only saved locally ("waiting to upload"). Each item gets a "▶ Replay" button that restores its seating, view and jumps to its date. Keep the style consistent with the existing panels. Then update CLAUDE.md, and commit the changes.
+
+---
+
+add, commit and push to github
+
+---
+
+<pasted_content id="5add">
+Re-read CLAUDE.md. Two small jobs, no feature changes:
+
+1. CLAUDE.md is public in the GitHub repo. Make it safe to publish: remove personal details (my degree/background, my iCloud notes path, "win any prize" goals and the prize-strategy list, notes about ideas I rejected). Keep everything technical: how the project works, the music/design rules, the "How to work with Gillian" working rules (but describe me only as "the developer"), how to run it, and the current status.
+
+2. Then commit everything that's currently changed (including the trumpet and keyboard-shortcut changes already in static/main.js) with a clear message, and push.
+</pasted_content id="5add">
+
+---
+
+trumpet is still too quiet at most of time, replace it or delete it.
+i think timeline moving should be more dedicate, like adding  moving bt mouse dragging to go to a specific point user want.
+
+---
+
+1. the the instrument from add musician should not have dotted line in graph
+2. delete clarinet
+
+---
+
+commit and push
+
+---
+
+<pasted_content id="5add">
+Change how Save and Replay work so the user can choose a time range ("from when to when"):
+
+1. Save panel: add two date fields, "From" and "To" (type="date"), next to the name box.
+   - Default "From" = the date where Play was last started (or after the last Jump / arrow-key move); default "To" = the current playing date. Update the defaults live while the music plays, unless the user has edited the fields.
+   - Add two small buttons: "⏺ Mark start" (sets From to the current playing date) and "⏹ Mark end" (sets To to the current playing date), so the user can mark the range while listening.
+   - Validate: both dates must be inside the loaded data; if From is after To, swap them; show a clear message in the status line if something is wrong.
+
+2. Saving: store `from` and `to` (plus everything already saved: title, seating, guests, viewFrom, Gemini comments). Keep `at` = `from` so older code still works. Works the same with MongoDB and the offline queue.
+
+3. Gallery: show the range on each card, e.g. "2016-06-01 → 2016-07-15 (about 6 weeks)". Old saves without from/to show their single date as before.
+
+4. Replay: restore the setup as now, jump to `from`, play, and automatically pause when the music reaches `to`, with an event message "🎬 End of '<title>'". Show a small "Replaying: <title> (from → to)" note while it plays. Pressing Space, the arrow keys or Jump during a replay cancels the auto-stop. Old saves without `to` play on without stopping, like now.
+
+Keep everything else working (music, Gemini conductor, narrator, keyboard shortcuts, guests, volume sliders). Check with node --check and a quick simulation, explain simply how to test it, update CLAUDE.md, then commit and push.
+</pasted_content id="5add">
