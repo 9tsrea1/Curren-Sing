@@ -21,11 +21,10 @@ const INSTRUMENTS = [
   { id: 'flute',       label: 'Flute',       color: '#bef264', gain: -11, def: 'JPY', lo: 69, hi: 88, notes: ['C4', 'E4', 'A4', 'C5', 'E5', 'A5', 'C6'] },
   { id: 'harp',        label: 'Harp',        color: '#f0abfc', gain: -11, def: 'CHF', lo: 52, hi: 79, notes: ['C3', 'E3', 'G3', 'A4', 'C5', 'E5', 'G5'] },
   { id: 'piano',       label: 'Piano',       color: '#ffffff', gain: -13, def: 'EUR', lo: 45, hi: 67, notes: ['C2', 'G2', 'C3', 'E3', 'G3', 'C4', 'E4', 'G4', 'C5', 'E5', 'G5', 'C6'] },
-  { id: 'clarinet',    label: 'Clarinet',    color: '#fde68a', gain: -8,  def: 'AUD', lo: 55, hi: 77, notes: ['D3', 'F3', 'D4', 'F4', 'D5', 'F5', 'D6'] },   // replaced horn/trumpet (they only played when tense, so felt missing)
   { id: 'contrabass',  label: 'Double bass', color: '#c4b5fd', gain: -7,  def: 'CAD', lo: 33, hi: 50, notes: ['C2', 'D2', 'E2', 'A2', 'E3'] },
 ];
 const NI = INSTRUMENTS.length;
-const [VLN, VC, FL, HP, PNO, HN, CB] = [0, 1, 2, 3, 4, 5, 6];
+const [VLN, VC, FL, HP, PNO, CB] = [0, 1, 2, 3, 4, 5];
 const BASKET = ['USD', 'EUR', 'JPY', 'GBP', 'CHF', 'AUD', 'CAD'];  // "the world" a currency is measured against
 
 // ---------------- classical harmony ----------------
@@ -67,10 +66,10 @@ const S = {
   dates: [], n: 0, world: [], spark: [],
   idx: 0, stride: 3, step: 0, bar: 0, Ws: 0,
   dir: null, numeral: 'I', chord: [], vel: 0.55,
-  on: { horn: false, timp: false, drum: false },
+  on: { timp: false, drum: false },
   last: Array(NI).fill(null), why: Array(NI).fill(null),
-  voice: [0, 1, 2, 3, 4, 5, 6],     // which instrument SOUND plays each part (user can change it)
-  removed: Array(7).fill(false),   // default musicians the user deleted (✕)
+  voice: INSTRUMENTS.map((_, k) => k),     // which instrument SOUND plays each part (user can change it)
+  removed: Array(NI).fill(false),   // default musicians the user deleted (✕)
   extra: [],          // guest musicians added with “+”: { type, cur, muted, pulse, why, last }
   muted: Array(NI).fill(false), pulse: Array(NI).fill(0), accent: Array(NI).fill(false), lastAccent: Array(NI).fill(-1e9),
   events: [], yr: 5, showScore: true,
@@ -246,7 +245,7 @@ function prepare({ names, prices, dates = [], mode = 'generic' }) {
 
   S.dates = dates; S.n = n; S.mode = mode;
   S.idx = 0; S.step = 0; S.bar = 0; S.Ws = S.world[0];
-  S.dir = null; S.on = { horn: false, timp: false, drum: false };
+  S.dir = null; S.on = { timp: false, drum: false };
   S.last = Array(NI).fill(null); S.why = Array(NI).fill(null); S.lastAccent = Array(NI).fill(-1e9);
   S.aiDir = null; S.aiMood = null; S.aiText = ''; S.aiLog = []; S.aiFails = 0; S.aiRetryAt = 0; S.events = [];
   S.aiPending = new Set(); S.ver = (S.ver || 0) + 1;
@@ -319,8 +318,7 @@ function setDirection(d) {
   if (!prev || prev.character !== d.character) event(`🎼 ${d.character} — ${d.blurb}`);
   if (prev && prev.mode !== d.mode) event(d.mode === 'minor' ? '🎼 The music turns to A minor' : '🎼 Back to C major');
   if (!prev || prev.tempo !== d.tempo) Tone.Transport.bpm.rampTo(TEMPI[d.tempo], 6);       // tempo glides over ~6 s
-  const want = { horn: TENSE(d.character), timp: TENSE(d.character) || d.character === 'Misterioso', drum: d.character === 'Grandioso' };
-  if (want.horn && !S.on.horn) event('🎶 The clarinet turns urgent');
+  const want = { timp: TENSE(d.character) || d.character === 'Misterioso', drum: d.character === 'Grandioso' };
   if (want.timp && !S.on.timp) event('🥁 Timpani enter');
   if (want.drum && !S.on.drum) event('🥁 A deep bass drum appears');
   S.on = want;
@@ -485,18 +483,6 @@ function onStep(time) {
       }
     }
 
-    // ---- CLARINET: an inner voice that is always there ----
-    // calm: one long note per half bar on the chord's 3rd/5th, above the cello; tense: every beat (more urgent)
-    const clarOn = S.on.horn ? pos % 2 === 0 : pos === 0 || pos === 4;
-    if (clarOn || S.accent[HN]) {
-      const def = V(HN), c = C(HN), target = def.lo + c.level[i] * (def.hi - def.lo);
-      const cands = chordTones(def.lo, def.hi).filter(m => m % 12 !== S.chord[0]);   // 3rd / 5th, like an inner voice
-      const m = nearest(cands, S.last[HN] != null ? (S.last[HN] + target) / 2 : target);
-      play(HN, m, S.on.horn ? '4n' : '2n', S.on.horn
-        ? `${S.dir.character}: the clarinet plays every beat on ${toNote(m)} (${S.numeral}) to push the music on; ${c.name} is ${levelWord(c.level[i])}`
-        : `${c.name} is ${levelWord(c.level[i])} → clarinet holds ${toNote(m)}, an inner note of ${S.numeral} (${chordName()}), moving smoothly`);
-    }
-
     // ---- TIMPANI (tuned to the tonic and dominant, like Beethoven) & DEEP DRUM ----
     const k = keyOf(), tonic = k.tonic % 12, dom = (k.tonic + 7) % 12;
     const timpPc = S.chord[0] === dom ? dom : tonic;
@@ -657,7 +643,7 @@ async function askAI(i) {
 // They follow their own currency like everyone else, but play QUIET, SIMPLE parts on chord notes,
 // each in its own gap of the bar — so adding guests never changes the character of the music.
 // =====================================================
-const GUEST_ROLE = { violin: 'melody', flute: 'melody', cello: 'low', contrabass: 'low', clarinet: 'melody', harp: 'colour', piano: 'colour' };
+const GUEST_ROLE = { violin: 'melody', flute: 'melody', cello: 'low', contrabass: 'low', harp: 'colour', piano: 'colour' };
 function playGuests(i, pos, time) {
   if (!S.extra.length || !S.inst) return;
   const crowd = S.extra.filter(g => !g.muted).length;
@@ -793,7 +779,7 @@ $('jump').onchange = e => { if (S.ready) jumpToDate(e.target.value); };
 // GALLERY — saved performances from MongoDB Atlas (or this laptop, while MongoDB is unreachable)
 // =====================================================
 const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-const instByLabel = label => INSTRUMENTS.findIndex(d => d.label === (label === 'French horn' || label === 'Trumpet' ? 'Clarinet' : label));   // old saves
+const instByLabel = label => INSTRUMENTS.findIndex(d => d.label === label);   // -1 for instruments that no longer exist (horn/trumpet/clarinet)
 let galleryItems = [];
 
 async function openGallery() {
@@ -846,7 +832,8 @@ function replayPerformance(p) {
   $('viewFrom').value = view;
 
   // 2. the seven main seats: instrument sound, currency, removed/muted
-  (p.seating || []).slice(0, INSTRUMENTS.length).forEach((s, k) => {
+  // older saves had a 7th seat (horn/trumpet/clarinet) — skip it so the other seats still line up
+  (p.seating || []).filter(s => instByLabel(s.instrument) >= 0).slice(0, NI).forEach((s, k) => {
     const t = instByLabel(s.instrument), c = curIdx(s.currency);
     if (t >= 0) S.voice[k] = t;
     if (c >= 0) S.assign[k] = c;
@@ -1060,16 +1047,14 @@ function draw() {
     noStroke(); fill(c); circle(ex, ey, 7 + S.pulse[k] * 14);
     if (!S.muted[k]) labels.push({ y: ey, text: `${S.cur[S.assign[k]].name} · ${def.label}${S.why[k] ? ' ' + S.why[k].note.split(' ')[0] : ''}`, c, ex });
   });
-  gpct.forEach((p, n) => {                                   // guest musicians: dashed lines
+  gpct.forEach((p, n) => {                                   // guest musicians: solid lines, same as the main seats
     const g = S.extra[n], def = INSTRUMENTS[g.type], c = color(def.color);
     g.pulse *= 0.9;
-    c.setAlpha(g.muted ? 40 : 200);
-    stroke(c); strokeWeight(g.muted ? 1 : 1.5 + g.pulse * 2); noFill();
-    drawingContext.setLineDash([6, 5]);
+    c.setAlpha(g.muted ? 40 : 230);
+    stroke(c); strokeWeight(g.muted ? 1 : 2 + g.pulse * 2); noFill();
     beginShape(); p.forEach((v, j) => vertex(X(j), Y(v))); endShape();
-    drawingContext.setLineDash([]);
     const ex = X(p.length - 1), ey = Y(p[p.length - 1]);
-    noStroke(); fill(c); circle(ex, ey, 5 + g.pulse * 10);
+    noStroke(); fill(c); circle(ex, ey, 7 + g.pulse * 14);
     if (!g.muted) labels.push({ y: ey, text: `${S.cur[g.cur].name} · ${def.label}${g.why ? ' ' + g.why.note : ''}`, c, ex });
   });
   labels.sort((p, q) => p.y - q.y);
