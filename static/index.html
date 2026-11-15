@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Currency Symphony</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Tone.js = music in the browser, p5.js = visuals -->
+  <script src="https://cdn.jsdelivr.net/npm/tone@14.8.49/build/Tone.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+</head>
+<body>
+  <div id="stage"></div>
+
+  <div id="panel">
+    <h1>🎻 Currency Symphony <small>working name</small></h1>
+
+    <div class="row">
+      <button id="playBtn">▶ Play</button>
+      <button id="demoBtn">Demo data</button>
+      <label class="file">Load CSV<input id="fileInput" type="file" accept=".csv,.txt"></label>
+    </div>
+
+    <div class="row">
+      <label>Jump to
+        <select id="jump" disabled></select></label>
+    </div>
+    <div class="row">
+      <label>View from
+        <select id="viewFrom" disabled style="width:100%;margin-top:4px"></select></label>
+    </div>
+    <div class="row">
+      <label>Days per note <span id="strideVal">3</span>
+        <input id="stride" type="range" min="1" max="10" value="3"></label>
+    </div>
+
+    <h2>Orchestra seating</h2>
+    <p class="hint">Pick which currency each instrument plays. Click a dot to mute.</p>
+    <div id="seating"></div>
+
+    <div class="row">
+      <button id="saveBtn">💾 Save performance</button>
+      <button id="scoreBtn">🎼 Hide score</button>
+    </div>
+
+    <p id="status">Press ▶ Play for demo data, or load the ECB CSV.</p>
+    <p id="aiStatus"></p>
+  </div>
+
+  <div id="score">
+    <h2>🎼 Score — why these notes?</h2>
+    <div id="scoreHead">Press ▶ Play — the conductor will choose the first phrase.</div>
+    <div id="scoreRows"></div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
