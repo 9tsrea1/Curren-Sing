@@ -3,12 +3,14 @@
 - Serves the website
 - /api/ecb         → latest ECB exchange-rate history (downloaded automatically, cached 12 h in data/)
 - /api/analyse     → asks Gemini how stressed the world currency market is
+- /api/narrate     → ElevenLabs reads a sentence aloud (mp3, cached in data/narration/)
 - /api/performances → saves / lists performances in MongoDB Atlas
 
 Run:  python app.py   →  open http://localhost:5050
 (Port 5050, because macOS AirPlay already uses 5000.)
 """
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -128,6 +130,48 @@ def analyse():
                 last_error = f"{e} {detail[:200]}".strip()
                 break                                            # not a "busy" error → try the next model
     return jsonify(error=last_error), 502
+
+
+# ---------- Narrator: ElevenLabs reads Gemini's commentary aloud ----------
+# Every clip is saved in data/narration/ (named by a fingerprint of voice + text),
+# so the same sentence is only paid for once.
+NARRATION_DIR = os.path.join(DATA_DIR, "narration")
+
+
+@app.post("/api/narrate")
+def narrate():
+    key = os.environ.get("ELEVENLABS_API_KEY")
+    voice = os.environ.get("ELEVENLABS_VOICE_ID")
+    model = os.environ.get("ELEVENLABS_MODEL", "eleven_flash_v2_5")   # flash = fast and cheap
+    if not key or not voice:
+        return jsonify(error="ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID missing in .env"), 503
+    text = " ".join(str((request.get_json(force=True) or {}).get("text", "")).split())[:400]
+    if not text:
+        return jsonify(error="no text"), 400
+
+    os.makedirs(NARRATION_DIR, exist_ok=True)
+    name = hashlib.sha256(f"{voice}|{model}|{text}".encode()).hexdigest()[:32] + ".mp3"
+    path = os.path.join(NARRATION_DIR, name)
+    if os.path.exists(path):                                   # already made → free
+        return send_from_directory(NARRATION_DIR, name, mimetype="audio/mpeg")
+    try:
+        r = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice}",
+            params={"output_format": "mp3_44100_128"},
+            headers={"xi-api-key": key, "Content-Type": "application/json", "Accept": "audio/mpeg"},
+            json={"text": text, "model_id": model,
+                  "voice_settings": {"stability": 0.6, "similarity_boost": 0.75}},   # calm, steady narrator
+            timeout=20,
+        )
+        r.raise_for_status()
+    except Exception as e:
+        detail = getattr(getattr(e, "response", None), "text", "") or ""
+        return jsonify(error=f"ElevenLabs: {e} {detail[:200]}".strip()), 502
+    tmp = path + ".part"                                       # write then rename → never a half-saved file
+    with open(tmp, "wb") as f:
+        f.write(r.content)
+    os.replace(tmp, path)
+    return Response(r.content, mimetype="audio/mpeg")
 
 
 # ---------- Performances: saved to MongoDB Atlas, or kept on this laptop until MongoDB is reachable ----------

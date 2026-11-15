@@ -27,8 +27,11 @@ ECB rates are "per 1 EUR", so `prepare()` converts every currency (plus EUR itse
 - **Conductor** picks a *character* per 4-bar phrase: Pastorale · Cantabile · Misterioso · Agitato · Grandioso → key (C major / A harmonic minor), tempo marking (Adagio…Presto), dynamics (p…ff), chord progression (e.g. I–IV–V–I, i–iv–V–i). **Gemini decides this** via `/api/analyse` (asked mid-phrase, applied at the next phrase); maths fallback (`fallbackDirection`) when offline. `sanitizeDirection()` validates Gemini's JSON.
 - **One chord per bar**, phrases end in cadences. Instruments: violin melody & flute answer = strong beats land on a chord tone near where the currency sits in its 3-month range (max leap 7 semitones), weak beats move one scale step towards it; cello holds 3rd/5th with smooth voice-leading; double bass plays root/5th; piano = Alberti bass when calm, repeated chords when tense; harp arpeggio up/down with the currency's trend; horns when tense; timpani tuned to tonic & dominant; deep drum only in Grandioso.
 - **Gemini reads ahead**: `prefetchAI()` keeps asking Gemini about the data rows where the next 1–3 phrases will start (one request at a time), storing plans in `S.aiCache`; `onBar` uses the plan for the current phrase start if present, else maths. Cache is cleared on new data / view change. Server (`app.py`) tries GEMINI_MODEL then GEMINI_FALLBACK_MODELS from `.env` (currently gemini-3.5-flash-lite first; 3.8-flash was overloaded), skipping busy (429/503) models instantly, 15 s timeout, thinkingLevel "low". `gemini_test.py` diagnoses keys/models/latency.
+- **Narrator (ElevenLabs)**: when a phrase starts with a Gemini plan, `onBar` calls `narrate(plan)` → POST `/api/narrate` {text: plan.say (Gemini's commentary)} → plays the mp3 via an HTML `Audio` at volume 0.45 over the music. Server caches each clip in `data/narration/` (sha256 of voice|model|text) so repeats cost nothing; model default `eleven_flash_v2_5` (override with ELEVENLABS_MODEL). Rules: one clip at a time (new ones are *skipped*, not queued, while one is busy), each plan spoken once, stops on pause / when 🎙 Narrator is turned off, 20 s timeout, on any failure it waits 30 s and shows "Narrator unavailable — music continues" in `#narrStatus`. The music never waits for it.
 - `S.why[k]` stores the note + plain-English reason; the **Score panel** (right side, toggle "🎼 Hide score") shows conductor choice, progression, current chord, and each instrument's note + reason.
 - Gillian found the earlier free-scale version "weird" — keep it classical (functional harmony, voice-leading, cadences).
+
+- **Guest musicians (“+ Add musician”)**: `S.extra` (max 8) — user picks any instrument type + any currency. `playGuests()` keeps the vibe unchanged: quiet velocity, chord notes only, fixed gaps in the bar (melody guests beats 2/4 off-beats, low guests every other bar, colour guests pos 3/7), take turns when >3. Drawn as dashed lines; listed in the Score panel; saved with performances. Volume sliders: narrator volume + music volume (Tone.Destination).
 
 Rules (Gillian's design — keep them):
 - **Each melody follows its currency's value** (up → higher notes).
@@ -47,6 +50,7 @@ Data: **European Central Bank daily reference rates** (rates per 1 EUR, 1999 →
 ```
 app.py              Flask server (port 5050 — macOS AirPlay uses 5000)
                     /api/analyse      → Gemini judges world tension → {mood 0-1, headline, commentary}
+                    /api/narrate      → ElevenLabs text→speech mp3, cached in data/narration/<hash>.mp3
                     /api/performances → save/list performances in MongoDB Atlas (db "hackathon")
 static/index.html   page + control panel
 static/main.js      data → stress/world maths → Tone.js orchestra → p5.js stage visuals
@@ -54,7 +58,7 @@ static/style.css
 static/assets/      (sound files if needed)
 test_db.py          Gillian's MongoDB connection test
 atlas-credentials.env  MONGODB_URI (secret, gitignored)
-.env                GEMINI_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID (secret, gitignored)
+.env                GEMINI_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, optional ELEVENLABS_MODEL (secret, gitignored)
 .venv/              Python venv (flask, pymongo, python-dotenv, requests)
 ```
 Run: `source .venv/bin/activate && pip install -r requirements.txt && python app.py` → http://localhost:5050 (opening index.html directly works but has no AI/saving).
@@ -75,7 +79,7 @@ Skipped: RS/Arduino, Solana, P&G, QRT, Tiger Data (unless time).
 - [x] (22:30) Line-graph view, smooth/musical dynamics, user-chosen seating, EUR added — needs testing
 - [ ] Load ECB CSV, check the music sounds good and nothing freezes
 - [ ] Gemini key in `.env`, run `python app.py`, confirm AI commentary appears
-- [ ] **ElevenLabs narrator**: read Gemini's commentary aloud like a concert narrator (needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID; add a `/api/narrate` endpoint returning audio, play it in main.js, don't overlap clips)
+- [x] (Sun) **ElevenLabs narrator** built: `/api/narrate` + 🎙 Narrator button. Tested with a fake ElevenLabs (caching + errors OK). **Real call returned 401 "Invalid API key"** → Gillian must paste a fresh ELEVENLABS_API_KEY into `.env`, restart app.py, then listen to check it's not too loud/quiet
 - [ ] MongoDB gallery page listing saved performances
 - [ ] Push to GitHub regularly; Entire mirror connected
 - [ ] (stretch) deploy to Vultr

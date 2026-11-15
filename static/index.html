@@ -49,10 +49,18 @@
     <div class="row">
       <button id="saveBtn">💾 Save performance</button>
       <button id="scoreBtn">🎼 Hide score</button>
+      <button id="narrBtn" title="ElevenLabs reads Gemini's commentary aloud at the start of each phrase">🎙 Narrator: on</button>
+    </div>
+    <div class="row">
+      <label>🎙 Narrator volume <span id="narrVolVal">45%</span>
+        <input id="narrVol" type="range" min="0" max="100" value="45"></label>
+      <label>🎻 Music volume <span id="musicVolVal">100%</span>
+        <input id="musicVol" type="range" min="0" max="100" value="100"></label>
     </div>
 
     <p id="status">Loading the latest exchange rates…</p>
     <p id="aiStatus"></p>
+    <p id="narrStatus"></p>
   </div>
 
   <div id="score">

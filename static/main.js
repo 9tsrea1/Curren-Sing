@@ -69,6 +69,9 @@ const S = {
   dir: null, numeral: 'I', chord: [], vel: 0.55,
   on: { horn: false, timp: false, drum: false },
   last: Array(NI).fill(null), why: Array(NI).fill(null),
+  voice: [0, 1, 2, 3, 4, 5, 6],     // which instrument SOUND plays each part (user can change it)
+  removed: Array(7).fill(false),   // default musicians the user deleted (✕)
+  extra: [],          // guest musicians added with “+”: { type, cur, muted, pulse, why, last }
   muted: Array(NI).fill(false), pulse: Array(NI).fill(0), accent: Array(NI).fill(false), lastAccent: Array(NI).fill(-1e9),
   events: [], yr: 5, showScore: true,
   inst: null, timp: null, drum: null,
@@ -248,6 +251,7 @@ function prepare({ names, prices, dates = [], mode = 'generic' }) {
   S.aiDir = null; S.aiMood = null; S.aiText = ''; S.aiLog = []; S.aiFails = 0; S.aiRetryAt = 0; S.events = [];
   S.aiPending = new Set(); S.ver = (S.ver || 0) + 1;
   S.aiCache = new Map();
+  S.extra.forEach(g => { if (g.cur >= S.cur.length) g.cur = 0; g.last = null; g.why = null; });
   S.ready = true;
   buildSeating(); buildViewMenu();
   $('jump').disabled = !dates.length;
@@ -326,6 +330,7 @@ function setDirection(d) {
 // HARMONY HELPERS
 // =====================================================
 const keyOf = () => KEYS[S.dir.mode];
+const V = k => INSTRUMENTS[S.voice[k]];          // the instrument chosen for part k
 function chordPcs(key, numeral) {                 // e.g. 'V' in A minor → [E, G#, B] as pitch classes
   const d = DEGREE[numeral];
   return [0, 2, 4].map(o => (key.tonic + key.steps[(d + o) % 7]) % 12);
@@ -351,7 +356,7 @@ function onBar(i) {
   // new phrase every 4 bars → the conductor decides its character
   if (S.bar % 4 === 0) {
     const plan = cachedAI(i);                                          // did Gemini already plan this moment?
-    if (plan) { S.aiDir = plan.dir; S.aiMood = plan.mood; S.aiText = plan.text; S.aiRow = i; S.aiTextDate = S.dates[i] || ''; }
+    if (plan) { S.aiDir = plan.dir; S.aiMood = plan.mood; S.aiText = plan.text; S.aiRow = i; S.aiTextDate = S.dates[i] || ''; narrate(plan); }
   }
   const aiFresh = S.aiMood !== null && Math.abs(i - S.aiRow) < 32 * S.stride;
   const target = aiFresh ? 0.5 * S.world[i] + 0.5 * S.aiMood : S.world[i];
@@ -362,11 +367,13 @@ function onBar(i) {
   S.bar++;
 
   S.vel += 0.25 * (DYN[S.dir.dyn] - S.vel);                         // dynamics change gradually
-  S.inst.forEach((ins, k) => {                                        // a currency in a bad place → gently louder
-    const want = INSTRUMENTS[k].gain + 6 * S.cur[S.assign[k]].stress[i];
+  for (let k = 0; k < NI; k++) {                                      // a currency in a bad place → gently louder
+    if (S.removed[k]) continue;
+    const ins = S.inst[S.voice[k]];
+    const want = V(k).gain + 6 * S.cur[S.assign[k]].stress[i];
     ins.db += 0.25 * (want - ins.db);
     ins.sampler.volume.value = ins.db; ins.synth.volume.value = ins.db - 4;
-  });
+  }
 }
 
 // =====================================================
@@ -385,14 +392,14 @@ function onStep(time) {
       let mz = 0;
       for (let j = Math.max(1, i - S.stride + 1); j <= i; j++) mz = Math.max(mz, Math.abs(C(k).z[j]));
       S.accent[k] = mz > ACCENT_Z && S.step - S.lastAccent[k] > ACCENT_GAP && !S.muted[k];
-      if (S.accent[k]) { S.lastAccent[k] = S.step; event(`⚡ ${C(k).name} jolts ${moveWord(k, i)} — ${INSTRUMENTS[k].label} sforzando`); }
+      if (S.accent[k]) { S.lastAccent[k] = S.step; event(`⚡ ${C(k).name} jolts ${moveWord(k, i)} — ${V(k).label} sforzando`); }
     }
 
     // play helper: records WHY each note was chosen
     const play = (k, midis, dur, reason) => {
       if (S.muted[k]) return;
       midis = [].concat(midis);
-      const ins = S.inst[k], out = ins.ready ? ins.sampler : ins.synth;
+      const ins = S.inst[S.voice[k]], out = ins.ready ? ins.sampler : ins.synth;
       let vel = clamp(S.vel + 0.15 * C(k).stress[i], 0.2, 0.9);
       if (S.accent[k]) {                                               // sforzando: loud + doubled an octave up
         midis = [...midis, midis[midis.length - 1] + 12]; vel = 1;
@@ -406,7 +413,7 @@ function onStep(time) {
 
     // a MELODY note: strong beat → chord note near where the currency sits; weak beat → one step towards it
     const melody = (k, strong) => {
-      const def = INSTRUMENTS[k], c = C(k), lvl = c.level[i];
+      const def = V(k), c = C(k), lvl = c.level[i];
       const target = def.lo + lvl * (def.hi - def.lo);
       const prev = S.last[k] ?? Math.round((def.lo + def.hi) / 2);
       if (strong) {
@@ -437,7 +444,7 @@ function onStep(time) {
 
     // ---- CELLO: holds a chord note, moving smoothly (nearest note to the last one) ----
     if (pos === 0 || pos === 4 || S.accent[VC]) {
-      const def = INSTRUMENTS[VC], c = C(VC), target = def.lo + c.level[i] * (def.hi - def.lo);
+      const def = V(VC), c = C(VC), target = def.lo + c.level[i] * (def.hi - def.lo);
       const cands = chordTones(def.lo, def.hi).filter(m => m % 12 !== S.chord[0]);   // prefers 3rd / 5th of the chord
       const m = nearest(cands, S.last[VC] != null ? (S.last[VC] + target) / 2 : target);
       play(VC, m, '2n', `${c.name} is ${levelWord(c.level[i])} → cello holds ${toNote(m)}, the ${m % 12 === S.chord[1] ? '3rd' : '5th'} of ${S.numeral} (${chordName()}), moving as little as possible`);
@@ -446,7 +453,7 @@ function onStep(time) {
     // ---- DOUBLE BASS: the root of the chord (the foundation) ----
     const bassOn = fast ? pos % 2 === 0 : pos === 0 || pos === 4;
     if (bassOn || S.accent[CB]) {
-      const def = INSTRUMENTS[CB], c = C(CB);
+      const def = V(CB), c = C(CB);
       const pc = pos === 4 && !fast ? S.chord[2] : S.chord[0];
       const cands = inRange(def.lo, def.hi, m => m % 12 === pc);
       const m = c.level[i] > 0.5 ? cands[cands.length - 1] : cands[0];
@@ -455,7 +462,7 @@ function onStep(time) {
 
     // ---- PIANO: classical accompaniment (Alberti bass when calm, repeated chords when tense) ----
     {
-      const def = INSTRUMENTS[PNO], c = C(PNO), base = c.level[i] > 0.5 ? def.lo + 7 : def.lo;
+      const def = V(PNO), c = C(PNO), base = c.level[i] > 0.5 ? def.lo + 7 : def.lo;
       const tones = chordTones(base, base + 14).slice(0, 4);
       if (!fast && ch !== 'Misterioso') {                               // Alberti: low – high – middle – high
         const pattern = [0, 2, 1, 2], m = tones[pattern[pos % 4]] ?? tones[0];
@@ -467,7 +474,7 @@ function onStep(time) {
 
     // ---- HARP: arpeggio in the gaps, up if its currency is rising, down if falling ----
     if ((!fast && pos % 2 === 1) || (fast && pos === 0) || S.accent[HP]) {
-      const def = INSTRUMENTS[HP], c = C(HP), v = c.value;
+      const def = V(HP), c = C(HP), v = c.value;
       const rising = v[i] >= v[Math.max(0, i - 5 * S.stride)];
       const tones = chordTones(def.lo, def.hi);
       if (fast) play(HP, tones.slice(0, 4), '4n', `strummed ${S.numeral} chord (tense music)`);
@@ -480,7 +487,7 @@ function onStep(time) {
 
     // ---- FRENCH HORN: only when the music is tense (or its own currency is in a bad place) ----
     if (((S.on.horn || C(HN).stress[i] > 0.6) && (pos === 0 || (ch === 'Grandioso' && pos === 4))) || S.accent[HN]) {
-      const def = INSTRUMENTS[HN], c = C(HN);
+      const def = V(HN), c = C(HN);
       const m = nearest(chordTones(def.lo, def.hi), def.lo + c.level[i] * (def.hi - def.lo));
       play(HN, m, ch === 'Grandioso' ? '4n' : '1m', S.on.horn ? `${S.dir.character}: horns reinforce ${S.numeral}` : `${c.name} is in a bad place → its horn comes forward`);
     }
@@ -491,6 +498,8 @@ function onStep(time) {
     if (S.on.timp && TENSE(ch) && (pos === 0 || pos === 4)) S.timp.triggerAttackRelease(toNote(36 + ((timpPc - 0 + 12) % 12)), '8n', time, 0.4 + 0.4 * S.Ws);
     if (S.on.timp && ch === 'Misterioso' && S.bar % 4 === 0 && pos >= 6) S.timp.triggerAttackRelease(toNote(36 + dom), '16n', time, 0.3);
     if (S.on.drum && pos === 0 && (S.bar % 4 === 1 || S.numeral === 'V')) S.drum.triggerAttackRelease('C1', '2n', time, 0.9);
+
+    playGuests(i, pos, time);
 
     S.step++;
     S.idx = (i + S.stride) % S.n;
@@ -530,6 +539,66 @@ setInterval(prefetchAI, 1000);
 
 
 // =====================================================
+// NARRATOR — ElevenLabs reads Gemini's commentary aloud, quietly, over the music
+// Rules: only one clip at a time (a new one is simply skipped while another is busy),
+// each plan is spoken once, and any failure is silent for the music (it keeps playing).
+// =====================================================
+const NARR = { on: true, busy: false, audio: null, lastPlan: null, retryAt: 0, volume: 0.45 };
+const setNarr = t => { $('narrStatus').textContent = t; };
+
+async function narrate(plan) {
+  if (!NARR.on || !S.playing || !plan.say || plan === NARR.lastPlan) return;
+  if (NARR.busy || location.protocol === 'file:' || Date.now() < NARR.retryAt) return;
+  NARR.busy = true; NARR.lastPlan = plan;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);                // give up after 20 s
+    const res = await fetch('/api/narrate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: plan.say }), signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+    if (!NARR.on || !S.playing) return;                                  // switched off / paused while waiting
+    const url = URL.createObjectURL(await res.blob());
+    const audio = new Audio(url);
+    audio.volume = NARR.volume;
+    NARR.audio = audio;
+    setNarr(`🎙 “${plan.say}”`);
+    await new Promise(done => {                                         // wait until the clip ends (or breaks)
+      audio.onended = audio.onerror = audio.onpause = done;
+      audio.play().catch(done);
+    });
+    URL.revokeObjectURL(url);
+    NARR.retryAt = 0;
+  } catch (e) {
+    NARR.retryAt = Date.now() + 30000;                                   // ElevenLabs down → try again in 30 s
+    setNarr(`🎙 Narrator unavailable (${String(e.message || e).slice(0, 120)}) — music continues`);
+  } finally {
+    NARR.busy = false; NARR.audio = null;
+  }
+}
+function stopNarration() { if (NARR.audio) NARR.audio.pause(); }       // pausing ends the clip
+
+// volume balance: narrator voice vs orchestra (both remembered while the page is open)
+$('narrVol').oninput = e => {
+  NARR.volume = +e.target.value / 100;
+  $('narrVolVal').textContent = `${e.target.value}%`;
+  if (NARR.audio) NARR.audio.volume = NARR.volume;                    // changes the clip that is playing too
+};
+$('musicVol').oninput = e => {
+  const v = +e.target.value;
+  $('musicVolVal').textContent = `${v}%`;
+  Tone.Destination.volume.rampTo(v === 0 ? -Infinity : 20 * Math.log10(v / 100), 0.1);   // % → decibels
+  Tone.Destination.mute = v === 0;
+};
+
+$('narrBtn').onclick = () => {
+  NARR.on = !NARR.on;
+  if (!NARR.on) { stopNarration(); setNarr(''); }
+  $('narrBtn').textContent = NARR.on ? '🎙 Narrator: on' : '🎙 Narrator: off';
+};
+
+
+// =====================================================
 // AI CONDUCTOR — Gemini chooses the character of the next phrase (needs: python app.py)
 // =====================================================
 async function askAI(i) {
@@ -546,7 +615,7 @@ async function askAI(i) {
     world_tension_from_maths: +S.world[i].toFixed(2),
     current_character: S.dir?.character,
     orchestra: S.assign.map((c, k) => ({
-      instrument: INSTRUMENTS[k].label,
+      instrument: V(k).label,
       currency: S.cur[c].name,
       change_last_month_pct: +S.cur[c].chg[i].toFixed(2),
       distance_from_1yr_normal_sd: +S.cur[c].dev[i].toFixed(2),
@@ -558,7 +627,7 @@ async function askAI(i) {
     const out = await res.json();
     if (!res.ok) throw new Error(out.error || res.status);
     if (ver !== S.ver) return;                                  // answer belongs to old data / old view
-    const plan = { dir: sanitizeDirection(out), mood: clamp(+out.mood || 0, 0, 1), text: `${out.headline} — ${out.commentary}` };
+    const plan = { dir: sanitizeDirection(out), mood: clamp(+out.mood || 0, 0, 1), text: `${out.headline} — ${out.commentary}`, say: out.commentary || '' };
     S.aiCache.set(i, plan);
     S.aiLat = 0.7 * S.aiLat + 0.3 * ((Date.now() - t0) / 1000);   // how long Gemini usually takes
     if (S.aiCache.size > 300) S.aiCache.delete(S.aiCache.keys().next().value);   // keep memory small
@@ -577,31 +646,119 @@ async function askAI(i) {
   }
 }
 
+
+// =====================================================
+// GUEST MUSICIANS (added with “+ Add musician”)
+// They follow their own currency like everyone else, but play QUIET, SIMPLE parts on chord notes,
+// each in its own gap of the bar — so adding guests never changes the character of the music.
+// =====================================================
+const GUEST_ROLE = { violin: 'melody', flute: 'melody', cello: 'low', contrabass: 'low', 'french-horn': 'low', harp: 'colour', piano: 'colour' };
+function playGuests(i, pos, time) {
+  if (!S.extra.length || !S.inst) return;
+  const crowd = S.extra.filter(g => !g.muted).length;
+  S.extra.forEach((g, n) => {
+    if (g.muted) return;
+    const def = INSTRUMENTS[g.type], c = S.cur[g.cur], lvl = c.level[i];
+    const role = GUEST_ROLE[def.id];
+    const slots = { melody: [2, 6], low: [0], colour: [3, 7] }[role];
+    if (!slots.includes(pos)) return;
+    if (role === 'low' && (S.bar + n) % 2 === 0) return;               // low guests: every other bar
+    if (role !== 'low' && crowd > 3 && (S.bar + n) % 2 === 0) return;  // many guests → take turns
+    const target = def.lo + lvl * (def.hi - def.lo);
+    const m = nearest(chordTones(def.lo, def.hi), g.last != null ? (g.last + target) / 2 : target);
+    const vel = clamp(0.32 + 0.15 * c.stress[i] - 0.03 * crowd, 0.15, 0.5);   // quiet: guests never take over
+    const ins = S.inst[g.type];
+    (ins.ready ? ins.sampler : ins.synth).triggerAttackRelease(toNote(m), role === 'low' ? '1m' : '4n', time, vel);
+    g.last = m; g.pulse = 0.8;
+    g.why = { note: toNote(m), reason: `${c.name} is ${levelWord(lvl)} → a soft chord note of ${S.numeral} (${chordName()}) in a quiet gap of the bar` };
+  });
+}
+function addGuest() {
+  if (!S.ready || S.extra.length >= 8) return;
+  const seated = new Set([...S.assign, ...S.extra.map(g => g.cur)]);
+  let cur = S.cur.findIndex((_, j) => !seated.has(j)); if (cur < 0) cur = 0;
+  const counts = INSTRUMENTS.map((_, t) => S.extra.filter(g => g.type === t).length);
+  const type = counts.indexOf(Math.min(...counts));                      // spread guests across instruments
+  S.extra.push({ type, cur, muted: false, pulse: 0, why: null, last: null });
+  buildSeating();
+}
+
 // =====================================================
 // CONTROLS
 // =====================================================
 function buildSeating() {
   const box = $('seating'); box.innerHTML = '';
   const order = S.cur.map((c, j) => [c.name, j]).sort((a, b) => a[0].localeCompare(b[0]));
+  const players = S.removed.filter(r => !r).length + S.extra.length;   // at least one musician must stay
+  const muteBtn = (isMuted, onClick) => {
+    const b = document.createElement('button');
+    b.className = 'mute'; b.textContent = isMuted ? '🔇' : '🔊';
+    b.title = isMuted ? 'Muted — click to hear again' : 'Mute for now (keeps its seat)';
+    b.onclick = onClick; return b;
+  };
+  const delBtn = onClick => {
+    const b = document.createElement('button');
+    b.className = 'del'; b.textContent = '✕';
+    b.disabled = players <= 1;
+    b.title = players <= 1 ? 'At least one musician has to stay' : 'Remove this musician';
+    b.onclick = onClick; return b;
+  };
+  const dotOf = (def, muted) => {
+    const d = document.createElement('span');
+    d.className = 'dot'; d.style.borderColor = def.color; d.style.background = muted ? 'transparent' : def.color;
+    return d;
+  };
+
   INSTRUMENTS.forEach((def, k) => {
+    if (S.removed[k]) return;
     const row = document.createElement('div');
     row.className = 'seat' + (S.muted[k] ? ' off' : '');
-    const dot = document.createElement('button');
-    dot.className = 'dot'; dot.title = 'Mute / unmute';
-    dot.style.borderColor = def.color; dot.style.background = S.muted[k] ? 'transparent' : def.color;
-    dot.onclick = () => {
-      S.muted[k] = !S.muted[k];
-      row.classList.toggle('off', S.muted[k]);
-      dot.style.background = S.muted[k] ? 'transparent' : def.color;
-    };
-    const name = document.createElement('span'); name.className = 'name'; name.textContent = def.label;
+    const inst = document.createElement('select');
+    INSTRUMENTS.forEach((d, t) => { const o = document.createElement('option'); o.value = t; o.textContent = d.label; inst.appendChild(o); });
+    inst.value = S.voice[k];
+    inst.onchange = () => { S.voice[k] = +inst.value; S.last[k] = null; buildSeating(); };
     const sel = document.createElement('select');
     order.forEach(([nm, j]) => { const o = document.createElement('option'); o.value = j; o.textContent = nm; sel.appendChild(o); });
     sel.value = S.assign[k];
     sel.onchange = () => { S.assign[k] = +sel.value; S.last[k] = null; };
-    row.append(dot, name, sel);
+    row.append(dotOf(V(k), S.muted[k]), inst, sel,
+      muteBtn(S.muted[k], () => { S.muted[k] = !S.muted[k]; buildSeating(); }),
+      delBtn(() => { S.removed[k] = true; S.muted[k] = true; buildSeating(); }));
     box.appendChild(row);
   });
+
+  // guest musicians
+  S.extra.forEach((g, n) => {
+    const row = document.createElement('div');
+    row.className = 'seat guest' + (g.muted ? ' off' : '');
+    const def = INSTRUMENTS[g.type];
+    const dot = dotOf(def, g.muted);
+    const inst = document.createElement('select');
+    INSTRUMENTS.forEach((d, t) => { const o = document.createElement('option'); o.value = t; o.textContent = d.label; inst.appendChild(o); });
+    inst.value = g.type;
+    inst.onchange = () => { g.type = +inst.value; g.last = null; buildSeating(); };
+    const sel = document.createElement('select');
+    order.forEach(([nm, j]) => { const o = document.createElement('option'); o.value = j; o.textContent = nm; sel.appendChild(o); });
+    sel.value = g.cur;
+    sel.onchange = () => { g.cur = +sel.value; g.last = null; };
+    row.append(dot, inst, sel,
+      muteBtn(g.muted, () => { g.muted = !g.muted; buildSeating(); }),
+      delBtn(() => { S.extra.splice(n, 1); buildSeating(); }));
+    box.appendChild(row);
+  });
+
+  const add = document.createElement('button');
+  add.className = 'addGuest';
+  add.textContent = S.extra.length >= 8 ? 'Orchestra is full (8 extra musicians)' : '+ Add musician';
+  add.disabled = S.extra.length >= 8;
+  add.onclick = addGuest;
+  box.appendChild(add);
+  if (S.removed.some(r => r)) {
+    const back = document.createElement('button');
+    back.className = 'addGuest'; back.textContent = '↺ Bring back removed musicians';
+    back.onclick = () => { S.removed.forEach((r, k) => { if (r) { S.removed[k] = false; S.muted[k] = false; } }); buildSeating(); };
+    box.appendChild(back);
+  }
 }
 
 function buildViewMenu() {
@@ -654,7 +811,7 @@ $('playBtn').onclick = async () => {
   }
   await Tone.start();                                // browsers only allow sound after a click
   if (!S.inst) setupAudio();
-  if (S.playing) { Tone.Transport.pause(); S.playing = false; $('playBtn').textContent = '▶ Play'; }
+  if (S.playing) { Tone.Transport.pause(); S.playing = false; stopNarration(); $('playBtn').textContent = '▶ Play'; }
   else { Tone.Transport.start(); S.playing = true; $('playBtn').textContent = '⏸ Pause'; }
 };
 $('stride').oninput = e => { S.stride = +e.target.value; $('strideVal').textContent = e.target.value; };
@@ -669,7 +826,8 @@ $('saveBtn').onclick = async () => {
   setStatus('💾 Saving…');
   const body = {
     title: $('perfName').value.trim() || `Curren-Sing · ${S.dates[S.idx] || 'performance'}`,
-    seating: INSTRUMENTS.map((def, k) => ({ instrument: def.label, currency: S.cur[S.assign[k]].name })),
+    seating: INSTRUMENTS.map((_, k) => ({ instrument: V(k).label, currency: S.cur[S.assign[k]].name, removed: S.removed[k], muted: S.muted[k] })),
+    guests: S.extra.map(g => ({ instrument: INSTRUMENTS[g.type].label, currency: S.cur[g.cur].name, muted: g.muted })),
     viewFrom: S.view < 0 ? 'world' : S.names[S.view],
     at: S.dates[S.idx] || null, peakTension: Math.max(...S.world), ai: S.aiLog.slice(-20),
   };
@@ -700,10 +858,17 @@ function updateScore() {
     `<b>${d.character}</b> · ${keyOf().name} · ${d.tempo} (${TEMPI[d.tempo]} bpm) · <i>${d.dyn}</i><br>` +
     `<span class="src">${d.source === 'Gemini' ? `🤖 Gemini (plan for ${S.aiTextDate || 'this phrase'})` : '🧮 Maths (Gemini\'s plan not ready yet)'}: ${d.reason}</span><br>` +
     `Progression <b>${d.prog}</b> · bar ${((S.bar - 1) % 4) + 1}/4 · chord <b>${S.numeral}</b> = ${chordName()}`;
-  $('scoreRows').innerHTML = INSTRUMENTS.map((def, k) => {
+  $('scoreRows').innerHTML = INSTRUMENTS.map((_, k) => {
+    if (S.removed[k]) return '';
+    const def = V(k);
     const w = S.why[k], cur = S.cur[S.assign[k]]?.name || '';
     return `<div class="srow${S.muted[k] ? ' off' : ''}"><span class="sdot" style="background:${def.color}"></span>` +
       `<b>${def.label}</b> <small>${cur}</small> <span class="snote">${w ? w.note : '—'}</span>` +
+      `<div class="swhy">${w ? w.reason : 'waiting…'}</div></div>`;
+  }).join('') + S.extra.map(g => {
+    const def = INSTRUMENTS[g.type], w = g.why;
+    return `<div class="srow${g.muted ? ' off' : ''}"><span class="sdot" style="background:${def.color}"></span>` +
+      `<b>${def.label}</b> <small>${S.cur[g.cur].name}</small> <span class="snote">${w ? w.note : '—'}</span>` +
       `<div class="swhy">${w ? w.reason : 'waiting…'}</div></div>`;
   }).join('');
 }
@@ -736,12 +901,12 @@ function draw() {
   text(`Seen from ${viewName} · World tension ${Math.round(S.Ws * 100)}% · ${head}`, cx, 74);
 
   // ---- main graph: % change of each seated currency over the visible window ----
-  const pct = INSTRUMENTS.map((_, k) => {
-    const v = S.cur[S.assign[k]].value;
-    return v.slice(a, i + 1).map(x => (x / v[a] - 1) * 100);
-  });
+  const pctOf = c => { const v = S.cur[c].value; return v.slice(a, i + 1).map(x => (x / v[a] - 1) * 100); };
+  const pct = INSTRUMENTS.map((_, k) => pctOf(S.assign[k]));
+  const gpct = S.extra.map(g => pctOf(g.cur));
   let maxAbs = 2;
   pct.forEach((p, k) => { if (!S.muted[k]) p.forEach(x => { maxAbs = Math.max(maxAbs, Math.abs(x)); }); });
+  gpct.forEach((p, n) => { if (!S.extra[n].muted) p.forEach(x => { maxAbs = Math.max(maxAbs, Math.abs(x)); }); });
   S.yr += 0.06 * (maxAbs * 1.1 - S.yr);                       // smooth zoom, no jumping
   const X = j => map(j, 0, VIEW_ROWS, x0, x1);
   const Y = v => map(v, -S.yr, S.yr, bot, top);
@@ -766,7 +931,8 @@ function draw() {
 
   const labels = [];
   pct.forEach((p, k) => {
-    const def = INSTRUMENTS[k], c = color(def.color);
+    if (S.removed[k]) return;
+    const def = V(k), c = color(def.color);
     S.pulse[k] *= 0.9;
     c.setAlpha(S.muted[k] ? 40 : 230);
     stroke(c); strokeWeight(S.muted[k] ? 1 : 2 + S.pulse[k] * 2); noFill();
@@ -774,6 +940,18 @@ function draw() {
     const ex = X(p.length - 1), ey = Y(p[p.length - 1]);
     noStroke(); fill(c); circle(ex, ey, 7 + S.pulse[k] * 14);
     if (!S.muted[k]) labels.push({ y: ey, text: `${S.cur[S.assign[k]].name} · ${def.label}${S.why[k] ? ' ' + S.why[k].note.split(' ')[0] : ''}`, c, ex });
+  });
+  gpct.forEach((p, n) => {                                   // guest musicians: dashed lines
+    const g = S.extra[n], def = INSTRUMENTS[g.type], c = color(def.color);
+    g.pulse *= 0.9;
+    c.setAlpha(g.muted ? 40 : 200);
+    stroke(c); strokeWeight(g.muted ? 1 : 1.5 + g.pulse * 2); noFill();
+    drawingContext.setLineDash([6, 5]);
+    beginShape(); p.forEach((v, j) => vertex(X(j), Y(v))); endShape();
+    drawingContext.setLineDash([]);
+    const ex = X(p.length - 1), ey = Y(p[p.length - 1]);
+    noStroke(); fill(c); circle(ex, ey, 5 + g.pulse * 10);
+    if (!g.muted) labels.push({ y: ey, text: `${S.cur[g.cur].name} · ${def.label}${g.why ? ' ' + g.why.note : ''}`, c, ex });
   });
   labels.sort((p, q) => p.y - q.y);
   for (let j = 1; j < labels.length; j++) labels[j].y = Math.max(labels[j].y, labels[j - 1].y + 15);
@@ -800,8 +978,18 @@ function draw() {
   // ---- Gemini's commentary ----
   // only show Gemini's words while the phrase you're hearing really is Gemini's plan
   if (S.aiText && S.dir && S.dir.source === 'Gemini') {
-    fill(255, 235, 200); textSize(15); textAlign(LEFT); noStroke();
-    text(`🤖 Gemini on ${S.aiTextDate}: ${S.aiText}`, x0, height * 0.84, x1 - x0, 50);
+    // fit the whole sentence: use the space above the history strip, shrink the font if it's long
+    const msg = `🤖 Gemini on ${S.aiTextDate}: ${S.aiText}`;
+    const boxY = height * 0.83, boxH = height - 48 - boxY, boxW = x1 - x0;
+    let size = 15;
+    for (; size > 10; size--) {
+      textSize(size);
+      const lines = Math.ceil((textWidth(msg) * 1.1) / boxW);   // rough line count (+10% for word wrapping)
+      if (lines * size * 1.35 <= boxH) break;
+    }
+    fill(255, 235, 200); textSize(size); textLeading(size * 1.3); textAlign(LEFT, TOP); noStroke();
+    text(msg, x0, boxY, boxW, boxH);
+    textAlign(LEFT, BASELINE);
   }
 
   // ---- whole-history overview + playhead ----
