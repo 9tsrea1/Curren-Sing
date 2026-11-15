@@ -1,0 +1,9 @@
+which document are we in
+
+---
+
+in folder "durhack", Read CLAUDE.md first. Add an ElevenLabs narrator: a /api/narrate endpoint in app.py that turns text into speech using ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID from .env (cache the mp3 in data/narration/ so the same text isn't paid for twice). In static/main.js, when a phrase starts using Gemini's plan, speak Gemini's commentary quietly over the music, never overlapping two clips, with a 🎙 Narrator on/off button in the panel. If ElevenLabs fails, the music must keep playing. Then update CLAUDE.md.
+
+---
+
+Read CLAUDE.md first. Add a "📚 Gallery" button to the panel that opens a list of saved performances from GET /api/performances (it returns {items, mongodb}). Show each one's title, date, seating (instrument → currency) and the first Gemini headline, and mark ones that are only saved locally ("waiting to upload"). Each item gets a "▶ Replay" button that restores its seating, view and jumps to its date. Keep the style consistent with the existing panels. Then update CLAUDE.md, and commit the changes.
