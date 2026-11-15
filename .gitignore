@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 
 data/
+
+# macOS Finder files
+.DS_Store

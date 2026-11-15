@@ -21,7 +21,7 @@ const INSTRUMENTS = [
   { id: 'flute',       label: 'Flute',       color: '#bef264', gain: -11, def: 'JPY', lo: 69, hi: 88, notes: ['C4', 'E4', 'A4', 'C5', 'E5', 'A5', 'C6'] },
   { id: 'harp',        label: 'Harp',        color: '#f0abfc', gain: -11, def: 'CHF', lo: 52, hi: 79, notes: ['C3', 'E3', 'G3', 'A4', 'C5', 'E5', 'G5'] },
   { id: 'piano',       label: 'Piano',       color: '#ffffff', gain: -13, def: 'EUR', lo: 45, hi: 67, notes: ['C2', 'G2', 'C3', 'E3', 'G3', 'C4', 'E4', 'G4', 'C5', 'E5', 'G5', 'C6'] },
-  { id: 'french-horn', label: 'French horn', color: '#fde68a', gain: -11, def: 'AUD', lo: 48, hi: 65, notes: ['C2', 'G2', 'D3', 'F3', 'A3', 'C4'] },
+  { id: 'trumpet',     label: 'Trumpet',     color: '#fde68a', gain: -13, def: 'AUD', lo: 55, hi: 77, notes: ['F3', 'A3', 'C4', 'F4', 'G4', 'D5', 'F5', 'A5', 'C6'] },   // replaced the French horn (too quiet)
   { id: 'contrabass',  label: 'Double bass', color: '#c4b5fd', gain: -7,  def: 'CAD', lo: 33, hi: 50, notes: ['C2', 'D2', 'E2', 'A2', 'E3'] },
 ];
 const NI = INSTRUMENTS.length;
@@ -320,7 +320,7 @@ function setDirection(d) {
   if (prev && prev.mode !== d.mode) event(d.mode === 'minor' ? '🎼 The music turns to A minor' : '🎼 Back to C major');
   if (!prev || prev.tempo !== d.tempo) Tone.Transport.bpm.rampTo(TEMPI[d.tempo], 6);       // tempo glides over ~6 s
   const want = { horn: TENSE(d.character), timp: TENSE(d.character) || d.character === 'Misterioso', drum: d.character === 'Grandioso' };
-  if (want.horn && !S.on.horn) event('🎺 French horns join in');
+  if (want.horn && !S.on.horn) event('🎺 Trumpets join in');
   if (want.timp && !S.on.timp) event('🥁 Timpani enter');
   if (want.drum && !S.on.drum) event('🥁 A deep bass drum appears');
   S.on = want;
@@ -489,7 +489,7 @@ function onStep(time) {
     if (((S.on.horn || C(HN).stress[i] > 0.6) && (pos === 0 || (ch === 'Grandioso' && pos === 4))) || S.accent[HN]) {
       const def = V(HN), c = C(HN);
       const m = nearest(chordTones(def.lo, def.hi), def.lo + c.level[i] * (def.hi - def.lo));
-      play(HN, m, ch === 'Grandioso' ? '4n' : '1m', S.on.horn ? `${S.dir.character}: horns reinforce ${S.numeral}` : `${c.name} is in a bad place → its horn comes forward`);
+      play(HN, m, ch === 'Grandioso' ? '4n' : '1m', S.on.horn ? `${S.dir.character}: trumpets reinforce ${S.numeral}` : `${c.name} is in a bad place → its trumpet comes forward`);
     }
 
     // ---- TIMPANI (tuned to the tonic and dominant, like Beethoven) & DEEP DRUM ----
@@ -652,7 +652,7 @@ async function askAI(i) {
 // They follow their own currency like everyone else, but play QUIET, SIMPLE parts on chord notes,
 // each in its own gap of the bar — so adding guests never changes the character of the music.
 // =====================================================
-const GUEST_ROLE = { violin: 'melody', flute: 'melody', cello: 'low', contrabass: 'low', 'french-horn': 'low', harp: 'colour', piano: 'colour' };
+const GUEST_ROLE = { violin: 'melody', flute: 'melody', cello: 'low', contrabass: 'low', trumpet: 'low', harp: 'colour', piano: 'colour' };
 function playGuests(i, pos, time) {
   if (!S.extra.length || !S.inst) return;
   const crowd = S.extra.filter(g => !g.muted).length;
@@ -788,7 +788,7 @@ $('jump').onchange = e => { if (S.ready) jumpToDate(e.target.value); };
 // GALLERY — saved performances from MongoDB Atlas (or this laptop, while MongoDB is unreachable)
 // =====================================================
 const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-const instByLabel = label => INSTRUMENTS.findIndex(d => d.label === label);
+const instByLabel = label => INSTRUMENTS.findIndex(d => d.label === (label === 'French horn' ? 'Trumpet' : label));
 let galleryItems = [];
 
 async function openGallery() {
@@ -875,6 +875,25 @@ $('galleryList').onclick = e => {
   if (b) replayPerformance(galleryItems[+b.dataset.replay]);
 };
 document.addEventListener('keydown', e => { if (e.key === 'Escape') $('gallery').hidden = true; });
+
+// keyboard shortcuts: Space = play / pause · ← → = back / forward 3 months · Shift + ← → = 1 year
+const typing = el => el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
+document.addEventListener('keydown', e => {
+  if (typing(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    $('playBtn').click();
+  } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && S.ready) {
+    e.preventDefault();
+    const rows = e.shiftKey ? 252 : 63;                      // ~1 year or ~3 months of trading days
+    const dir = e.key === 'ArrowRight' ? 1 : -1;
+    S.idx = clamp(S.idx + dir * rows, 0, S.n - 1);
+    S.last = S.last.map(() => null);                           // melodies restart smoothly from the new spot
+    event(`${dir > 0 ? '⏩' : '⏪'} ${e.shiftKey ? '1 year' : '3 months'} → ${S.dates[S.idx] || ''}`);
+  }
+});
+document.addEventListener('keyup', e => { if (e.code === 'Space' && !typing(e.target)) e.preventDefault(); });
 
 // Load the latest ECB exchange rates automatically (the server downloads them, refreshed every 12 h)
 async function loadECB() {
