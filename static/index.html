@@ -46,6 +46,13 @@
     <div class="row">
       <input id="perfName" type="text" placeholder="Name this performance (optional)">
     </div>
+    <!-- which stretch of history to save: follows the music until you edit it -->
+    <div class="row range">
+      <label>From <input id="saveFrom" type="date"></label>
+      <label>To <input id="saveTo" type="date"></label>
+      <button id="markStart" title="Set From to the date playing now">⏺ Mark start</button>
+      <button id="markEnd" title="Set To to the date playing now">⏹ Mark end</button>
+    </div>
     <div class="row">
       <button id="saveBtn">💾 Save performance</button>
       <button id="scoreBtn">🎼 Hide score</button>

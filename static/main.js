@@ -76,6 +76,7 @@ const S = {
   inst: null, timp: null, drum: null,
   aiDir: null, aiMood: null, aiRow: -1e9, aiText: '', aiInflight: 0, aiPending: new Set(), aiLat: 8, aiFails: 0, aiLog: [],
   aiCache: new Map(),   // Gemini's plans for upcoming phrases: data row → { dir, mood, text }
+  replay: null,         // replaying a saved range: { title, from, to, toRow } → auto-pause at toRow
 };
 
 // ---------------- helpers ----------------
@@ -252,7 +253,7 @@ function prepare({ names, prices, dates = [], mode = 'generic' }) {
   S.aiCache = new Map();
   S.extra.forEach(g => { if (g.cur >= S.cur.length) g.cur = 0; g.last = null; g.why = null; });
   S.ready = true;
-  buildSeating(); buildViewMenu();
+  buildSeating(); buildViewMenu(); resetRange();
   $('jump').disabled = !dates.length;
   setStatus(`Loaded ${n} days · ${S.cur.length} currencies${dates.length ? ` · ${dates[0]} → ${dates[n - 1]}` : ''}`);
 }
@@ -379,7 +380,7 @@ function onBar(i) {
 // =====================================================
 function onStep(time) {
   try {
-    if (!S.ready) return;
+    if (!S.ready || S.halt) return;
     const i = S.idx, pos = S.step % 8;
     if (pos === 0) onBar(i);
     const ch = S.dir.character, fast = TENSE(ch);
@@ -494,6 +495,11 @@ function onStep(time) {
 
     S.step++;
     S.idx = (i + S.stride) % S.n;
+    // replaying a saved range → stop when we reach its "to" date (or wrap round to the start)
+    if (S.replay && (S.idx >= S.replay.toRow || S.idx < i)) {
+      S.idx = S.replay.toRow; S.halt = true;               // hold on the last day; no more notes until ▶ Play
+      const t = S.replay.title; S.replay = null; setTimeout(() => endReplay(t), 0);
+    }
     prefetchAI();
   } catch (e) {
     console.error(e);
@@ -772,7 +778,7 @@ function jumpToDate(v) {
   setStatus('That date is not in this data.');
   return false;
 }
-$('jump').onchange = e => { if (S.ready) jumpToDate(e.target.value); };
+$('jump').onchange = e => { if (S.ready && jumpToDate(e.target.value)) { cancelReplay(); markStartHere(); } };
 
 
 // =====================================================
@@ -801,6 +807,21 @@ async function openGallery() {
   }
 }
 
+// "2016-06-01 → 2016-07-15 (about 6 weeks)" — or the single date of an older save
+function rangeText(p) {
+  if (!p.from || !p.to) return `at ${p.at || '—'}`;
+  return `${p.from} → ${p.to} (${howLong(p.from, p.to)})`;
+}
+function howLong(a, b) {
+  const days = Math.round((Date.parse(b) - Date.parse(a)) / 864e5);
+  if (!(days >= 0)) return '?';
+  if (days <= 1) return '1 day';
+  if (days < 14) return `${days} days`;
+  if (days < 60) return `about ${Math.round(days / 7)} weeks`;
+  if (days < 730) return `about ${Math.round(days / 30.44)} months`;
+  return `about ${+(days / 365.25).toFixed(1)} years`;
+}
+
 function galleryCard(p, n) {
   const when = p.createdAt ? new Date(p.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
   const seats = [...(p.seating || []).filter(s => !s.removed), ...(p.guests || [])].map(s => {
@@ -810,7 +831,7 @@ function galleryCard(p, n) {
   const headline = (p.ai || []).find(a => a.headline)?.headline;
   return `<div class="gitem">
     <div class="gtitle">${esc(p.title || 'Untitled performance')}</div>
-    <div class="gmeta">Saved ${esc(when)} · music at ${esc(p.at || '—')} · viewed from ${esc(p.viewFrom === 'world' || !p.viewFrom ? 'the world' : p.viewFrom)}</div>
+    <div class="gmeta">Saved ${esc(when)} · music ${esc(rangeText(p))} · viewed from ${esc(p.viewFrom === 'world' || !p.viewFrom ? 'the world' : p.viewFrom)}</div>
     <div class="gseat">${seats || '—'}</div>
     ${headline ? `<div class="gline">🤖 “${esc(headline)}”</div>` : ''}
     <div class="gfoot">
@@ -849,12 +870,20 @@ function replayPerformance(p) {
     .map(g => ({ ...g, pulse: 0, why: null, last: null }));
   buildSeating();
 
-  // 4. the date, then press play
-  const found = jumpToDate(p.at || '');
+  // 4. jump to its start; if it has an end date, stop there automatically
+  const title = p.title || 'performance', start = p.from || p.at || '';
+  const found = jumpToDate(start);
   if (!found) S.idx = 0;
+  markStartHere();
+  S.replay = null;
+  if (p.to && found) {
+    let toRow = -1;                                     // last data row on or before "to"
+    for (let j = S.idx; j < S.n && S.dates[j] <= p.to; j++) toRow = j;
+    if (toRow > S.idx) S.replay = { title, from: start, to: p.to, toRow };
+  }
   $('gallery').hidden = true;
   if (!S.playing) $('playBtn').click();
-  setStatus(`▶ Replaying "${p.title || 'performance'}"${p.at ? ` from ${p.at}` : ''}`
+  setStatus(`▶ Replaying "${title}"${S.replay ? ` (${start} → ${p.to}, stops by itself)` : start ? ` from ${start}` : ''}`
     + (missing.size ? ` — ${[...missing].join(', ')} not in this data, kept the current seat` : '')
     + (found ? '' : ' (its date is not in this data, starting from the beginning)'));
   event(`📚 Replaying "${p.title || 'performance'}"`);
@@ -875,6 +904,7 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space') {
     e.preventDefault();
     if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    cancelReplay();
     $('playBtn').click();
   } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && S.ready) {
     e.preventDefault();
@@ -883,6 +913,7 @@ document.addEventListener('keydown', e => {
     S.idx = clamp(S.idx + dir * rows, 0, S.n - 1);
     S.last = S.last.map(() => null);                           // melodies restart smoothly from the new spot
     event(`${dir > 0 ? '⏩' : '⏪'} ${e.shiftKey ? '1 year' : '3 months'} → ${S.dates[S.idx] || ''}`);
+    cancelReplay(); markStartHere();
   }
 });
 document.addEventListener('keyup', e => { if (e.code === 'Space' && !typing(e.target)) e.preventDefault(); });
@@ -917,9 +948,10 @@ $('playBtn').onclick = async () => {
   }
   await Tone.start();                                // browsers only allow sound after a click
   if (!S.inst) setupAudio();
-  if (S.playing) { Tone.Transport.pause(); S.playing = false; stopNarration(); $('playBtn').textContent = '▶ Play'; }
-  else { Tone.Transport.start(); S.playing = true; $('playBtn').textContent = '⏸ Pause'; }
+  if (S.playing) pauseMusic();
+  else { Tone.Transport.start(); S.playing = true; S.halt = false; markStartHere(); $('playBtn').textContent = '⏸ Pause'; }
 };
+function pauseMusic() { Tone.Transport.pause(); S.playing = false; stopNarration(); $('playBtn').textContent = '▶ Play'; }
 $('stride').oninput = e => { S.stride = +e.target.value; $('strideVal').textContent = e.target.value; };
 $('scoreBtn').onclick = () => {
   S.showScore = !S.showScore;
@@ -927,28 +959,97 @@ $('scoreBtn').onclick = () => {
   $('scoreBtn').textContent = S.showScore ? '🎼 Hide score' : '🎼 Show score';
 };
 
+// =====================================================
+// SAVE RANGE — "From" / "To" dates for Save, and the auto-stop for Replay
+// From follows where Play was last started (or the last Jump / arrow key / timeline drag),
+// To follows the date playing now — until the user edits a field or presses ⏺ / ⏹.
+// =====================================================
+const RANGE = { startRow: 0, fromEdited: false, toEdited: false };
+const isISO = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+function markStartHere() { RANGE.startRow = S.idx; }
+function setField(id, d) { const el = $(id); if (isISO(d) && el.value !== d && document.activeElement !== el) el.value = d; }
+function syncRange() {                                   // keep the defaults live while the music plays
+  if (!S.ready) return;
+  if (!RANGE.fromEdited) setField('saveFrom', S.dates[RANGE.startRow]);
+  if (!RANGE.toEdited) setField('saveTo', S.dates[S.idx]);
+  $('saveFrom').classList.toggle('edited', RANGE.fromEdited);
+  $('saveTo').classList.toggle('edited', RANGE.toEdited);
+}
+setInterval(syncRange, 400);
+function resetRange(newData = true) {
+  RANGE.fromEdited = RANGE.toEdited = false;
+  if (newData) {                                         // new data: limits = first/last day, no replay running
+    RANGE.startRow = 0; S.replay = null; S.halt = false;
+    const ok = isISO(S.dates[0]);
+    ['saveFrom', 'saveTo'].forEach(id => { $(id).min = ok ? S.dates[0] : ''; $(id).max = ok ? S.dates[S.n - 1] : ''; $(id).value = ''; });
+  }
+  syncRange();
+}
+$('saveFrom').oninput = e => { RANGE.fromEdited = e.target.value !== ''; };   // emptying a field = follow the music again
+$('saveTo').oninput = e => { RANGE.toEdited = e.target.value !== ''; };
+$('markStart').onclick = () => {
+  if (!S.ready) return;
+  RANGE.fromEdited = true; $('saveFrom').value = S.dates[S.idx]; syncRange();
+  event(`⏺ Start marked at ${S.dates[S.idx]}`);
+};
+$('markEnd').onclick = () => {
+  if (!S.ready) return;
+  RANGE.toEdited = true; $('saveTo').value = S.dates[S.idx]; syncRange();
+  event(`⏹ End marked at ${S.dates[S.idx]}`);
+};
+
+// check the two dates before saving → { from, to, swapped } or { error }
+function readRange() {
+  if (!isISO(S.dates[0])) return { from: null, to: null };              // data without proper dates: save without a range
+  let from = $('saveFrom').value, to = $('saveTo').value, swapped = false;
+  if (!from || !to) return { error: 'Pick both a "From" and a "To" date (or press ⏺ Mark start / ⏹ Mark end while it plays).' };
+  const first = S.dates[0], last = S.dates[S.n - 1];
+  for (const [name, d] of [['From', from], ['To', to]])
+    if (d < first || d > last) return { error: `"${name}" (${d}) is outside the loaded data — pick a date between ${first} and ${last}.` };
+  if (from > to) { [from, to] = [to, from]; swapped = true; $('saveFrom').value = from; $('saveTo').value = to; }
+  if (from === to) return { error: '"From" and "To" are the same day — let it play a little, then press ⏹ Mark end.' };
+  return { from, to, swapped };
+}
+
+// replay auto-stop
+function endReplay(title) {
+  if (S.playing) pauseMusic();
+  event(`🎬 End of '${title}'`);
+  setStatus(`🎬 End of "${title}" — press ▶ Play to carry on from here.`);
+}
+function cancelReplay() {
+  if (!S.replay) return;
+  S.replay = null;
+  event('🎬 Replay will play on (auto-stop cancelled)');
+}
+
 $('saveBtn').onclick = async () => {
   if (!S.ready) return setStatus('Load data first.');
+  const range = readRange();
+  if (range.error) return setStatus(`⚠️ ${range.error}`);
   setStatus('💾 Saving…');
   const body = {
-    title: $('perfName').value.trim() || `Curren-Sing · ${S.dates[S.idx] || 'performance'}`,
+    title: $('perfName').value.trim() || `Curren-Sing · ${range.from ? `${range.from} → ${range.to}` : S.dates[S.idx] || 'performance'}`,
+    from: range.from, to: range.to,
     seating: INSTRUMENTS.map((_, k) => ({ instrument: V(k).label, currency: S.cur[S.assign[k]].name, removed: S.removed[k], muted: S.muted[k] })),
     guests: S.extra.map(g => ({ instrument: INSTRUMENTS[g.type].label, currency: S.cur[g.cur].name, muted: g.muted })),
     viewFrom: S.view < 0 ? 'world' : S.names[S.view],
-    at: S.dates[S.idx] || null, peakTension: Math.max(...S.world), ai: S.aiLog.slice(-20),
+    at: range.from || S.dates[S.idx] || null,          // = from, so older code still works
+    peakTension: Math.max(...S.world), ai: S.aiLog.slice(-20),
   };
   try {
     const res = await fetch('/api/performances', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const out = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(out.error || res.status);
     if (out.stored === 'local') {
-      setStatus(`💾 Saved "${body.title}" on this laptop — MongoDB isn't reachable on this Wi-Fi, it will upload automatically when it is (${out.waiting} waiting)`);
+      setStatus(`💾 Saved "${body.title}" on this laptop — MongoDB isn't reachable on this Wi-Fi, it will upload automatically when it is (${out.waiting} waiting)${range.swapped ? ' (From was after To, so I swapped them)' : ''}`);
       event(`💾 Saved "${body.title}" (will upload to MongoDB later)`);
     } else {
-      setStatus(`💾 Saved "${body.title}" to MongoDB ✓${out.uploadedWaiting ? ` (+${out.uploadedWaiting} earlier saves uploaded)` : ''}`);
+      setStatus(`💾 Saved "${body.title}" to MongoDB ✓${out.uploadedWaiting ? ` (+${out.uploadedWaiting} earlier saves uploaded)` : ''}${range.swapped ? ' (From was after To, so I swapped them)' : ''}`);
       event(`💾 Saved "${body.title}" to MongoDB`);
     }
     $('perfName').value = '';
+    resetRange(false);                                  // fields follow the music again
   } catch (e) {
     setStatus(location.protocol === 'file:'
       ? 'Saving needs the Python server: run "python app.py" and open http://localhost:5050'
@@ -1005,6 +1106,7 @@ function draw() {
   const viewName = S.view < 0 ? 'the world' : S.names[S.view];
   const head = S.dir ? `${S.dir.character} · ${keyOf().name} · ${S.dir.tempo}` : 'warming up';
   text(`Seen from ${viewName} · World tension ${Math.round(S.Ws * 100)}% · ${head}`, cx, 74);
+  if (S.replay) { fill(255, 220, 120); textSize(12); text(`🎬 Replaying: ${S.replay.title} (${S.replay.from} → ${S.replay.to})`, cx, 92); }
 
   // ---- main graph: % change of each seated currency over the visible window ----
   const pctOf = c => { const v = S.cur[c].value; return v.slice(a, i + 1).map(x => (x / v[a] - 1) * 100); };
@@ -1077,7 +1179,7 @@ function draw() {
   const now = performance.now();
   S.events = S.events.filter(e => e.until > now);
   textAlign(RIGHT); textSize(14);
-  S.events.forEach((e, j) => { fill(255, 230, 160, map(e.until - now, 0, 800, 0, 255, true)); text(e.text, x1, 100 + j * 20); });
+  S.events.forEach((e, j) => { fill(255, 230, 160, map(e.until - now, 0, 800, 0, 255, true)); text(e.text, x1, (S.replay ? 118 : 100) + j * 20); });
 
   // ---- Gemini's commentary ----
   // only show Gemini's words while the phrase you're hearing really is Gemini's plan
@@ -1143,12 +1245,12 @@ function mousePressed(e) {
   // only react to clicks on the stage itself (not on the panels, buttons or menus above it)
   if (e && e.target && e.target.tagName !== 'CANVAS') return;
   if (!overTimeline(mouseX, mouseY)) return;
-  TL.drag = true; scrubTo(mouseX);
+  TL.drag = true; scrubTo(mouseX); cancelReplay();
   return false;                                           // don't select text / scroll on touch
 }
 function mouseDragged() { if (TL.drag) { scrubTo(mouseX); return false; } }
 function mouseReleased() {
   if (!TL.drag) return;
-  TL.drag = false;
+  TL.drag = false; markStartHere();
   event(`⏱ Moved to ${S.dates[S.idx] || ''}`);
 }

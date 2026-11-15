@@ -89,3 +89,10 @@ select option { color: #000; }
 .gitem .gfoot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
 .badge { font-size: 11px; padding: 2px 7px; border-radius: 999px;
   background: rgba(253, 230, 138, 0.15); border: 1px solid rgba(253, 230, 138, 0.5); color: #fde68a; }
+
+/* save range: From / To dates + mark buttons */
+.row.range label { width: calc(50% - 3px); font-size: 12px; opacity: 0.9; }
+.row.range input[type=date] { width: 100%; margin-top: 2px; background: rgba(255,255,255,0.1); color: inherit;
+  border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 4px 6px; font-size: 12px; color-scheme: dark; }
+.row.range input.edited { border-color: rgba(253, 230, 138, 0.6); }
+.row.range button { flex: 1; padding: 4px 8px; font-size: 12px; }
