@@ -21,7 +21,7 @@ const INSTRUMENTS = [
   { id: 'flute',       label: 'Flute',       color: '#bef264', gain: -11, def: 'JPY', lo: 69, hi: 88, notes: ['C4', 'E4', 'A4', 'C5', 'E5', 'A5', 'C6'] },
   { id: 'harp',        label: 'Harp',        color: '#f0abfc', gain: -11, def: 'CHF', lo: 52, hi: 79, notes: ['C3', 'E3', 'G3', 'A4', 'C5', 'E5', 'G5'] },
   { id: 'piano',       label: 'Piano',       color: '#ffffff', gain: -13, def: 'EUR', lo: 45, hi: 67, notes: ['C2', 'G2', 'C3', 'E3', 'G3', 'C4', 'E4', 'G4', 'C5', 'E5', 'G5', 'C6'] },
-  { id: 'trumpet',     label: 'Trumpet',     color: '#fde68a', gain: -13, def: 'AUD', lo: 55, hi: 77, notes: ['F3', 'A3', 'C4', 'F4', 'G4', 'D5', 'F5', 'A5', 'C6'] },   // replaced the French horn (too quiet)
+  { id: 'clarinet',    label: 'Clarinet',    color: '#fde68a', gain: -8,  def: 'AUD', lo: 55, hi: 77, notes: ['D3', 'F3', 'D4', 'F4', 'D5', 'F5', 'D6'] },   // replaced horn/trumpet (they only played when tense, so felt missing)
   { id: 'contrabass',  label: 'Double bass', color: '#c4b5fd', gain: -7,  def: 'CAD', lo: 33, hi: 50, notes: ['C2', 'D2', 'E2', 'A2', 'E3'] },
 ];
 const NI = INSTRUMENTS.length;
@@ -320,7 +320,7 @@ function setDirection(d) {
   if (prev && prev.mode !== d.mode) event(d.mode === 'minor' ? '🎼 The music turns to A minor' : '🎼 Back to C major');
   if (!prev || prev.tempo !== d.tempo) Tone.Transport.bpm.rampTo(TEMPI[d.tempo], 6);       // tempo glides over ~6 s
   const want = { horn: TENSE(d.character), timp: TENSE(d.character) || d.character === 'Misterioso', drum: d.character === 'Grandioso' };
-  if (want.horn && !S.on.horn) event('🎺 Trumpets join in');
+  if (want.horn && !S.on.horn) event('🎶 The clarinet turns urgent');
   if (want.timp && !S.on.timp) event('🥁 Timpani enter');
   if (want.drum && !S.on.drum) event('🥁 A deep bass drum appears');
   S.on = want;
@@ -391,7 +391,7 @@ function onStep(time) {
     for (let k = 0; k < NI; k++) {
       let mz = 0;
       for (let j = Math.max(1, i - S.stride + 1); j <= i; j++) mz = Math.max(mz, Math.abs(C(k).z[j]));
-      S.accent[k] = mz > ACCENT_Z && S.step - S.lastAccent[k] > ACCENT_GAP && !S.muted[k];
+      S.accent[k] = mz > ACCENT_Z && S.step - S.lastAccent[k] > ACCENT_GAP && !S.muted[k] && !TL.drag;   // no jolts while scrubbing
       if (S.accent[k]) { S.lastAccent[k] = S.step; event(`⚡ ${C(k).name} jolts ${moveWord(k, i)} — ${V(k).label} sforzando`); }
     }
 
@@ -485,11 +485,16 @@ function onStep(time) {
       }
     }
 
-    // ---- FRENCH HORN: only when the music is tense (or its own currency is in a bad place) ----
-    if (((S.on.horn || C(HN).stress[i] > 0.6) && (pos === 0 || (ch === 'Grandioso' && pos === 4))) || S.accent[HN]) {
-      const def = V(HN), c = C(HN);
-      const m = nearest(chordTones(def.lo, def.hi), def.lo + c.level[i] * (def.hi - def.lo));
-      play(HN, m, ch === 'Grandioso' ? '4n' : '1m', S.on.horn ? `${S.dir.character}: trumpets reinforce ${S.numeral}` : `${c.name} is in a bad place → its trumpet comes forward`);
+    // ---- CLARINET: an inner voice that is always there ----
+    // calm: one long note per half bar on the chord's 3rd/5th, above the cello; tense: every beat (more urgent)
+    const clarOn = S.on.horn ? pos % 2 === 0 : pos === 0 || pos === 4;
+    if (clarOn || S.accent[HN]) {
+      const def = V(HN), c = C(HN), target = def.lo + c.level[i] * (def.hi - def.lo);
+      const cands = chordTones(def.lo, def.hi).filter(m => m % 12 !== S.chord[0]);   // 3rd / 5th, like an inner voice
+      const m = nearest(cands, S.last[HN] != null ? (S.last[HN] + target) / 2 : target);
+      play(HN, m, S.on.horn ? '4n' : '2n', S.on.horn
+        ? `${S.dir.character}: the clarinet plays every beat on ${toNote(m)} (${S.numeral}) to push the music on; ${c.name} is ${levelWord(c.level[i])}`
+        : `${c.name} is ${levelWord(c.level[i])} → clarinet holds ${toNote(m)}, an inner note of ${S.numeral} (${chordName()}), moving smoothly`);
     }
 
     // ---- TIMPANI (tuned to the tonic and dominant, like Beethoven) & DEEP DRUM ----
@@ -652,7 +657,7 @@ async function askAI(i) {
 // They follow their own currency like everyone else, but play QUIET, SIMPLE parts on chord notes,
 // each in its own gap of the bar — so adding guests never changes the character of the music.
 // =====================================================
-const GUEST_ROLE = { violin: 'melody', flute: 'melody', cello: 'low', contrabass: 'low', trumpet: 'low', harp: 'colour', piano: 'colour' };
+const GUEST_ROLE = { violin: 'melody', flute: 'melody', cello: 'low', contrabass: 'low', clarinet: 'melody', harp: 'colour', piano: 'colour' };
 function playGuests(i, pos, time) {
   if (!S.extra.length || !S.inst) return;
   const crowd = S.extra.filter(g => !g.muted).length;
@@ -788,7 +793,7 @@ $('jump').onchange = e => { if (S.ready) jumpToDate(e.target.value); };
 // GALLERY — saved performances from MongoDB Atlas (or this laptop, while MongoDB is unreachable)
 // =====================================================
 const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-const instByLabel = label => INSTRUMENTS.findIndex(d => d.label === (label === 'French horn' ? 'Trumpet' : label));
+const instByLabel = label => INSTRUMENTS.findIndex(d => d.label === (label === 'French horn' || label === 'Trumpet' ? 'Clarinet' : label));   // old saves
 let galleryItems = [];
 
 async function openGallery() {
@@ -1106,11 +1111,59 @@ function draw() {
     textAlign(LEFT, BASELINE);
   }
 
-  // ---- whole-history overview + playhead ----
-  const oy = height - 16, oh = 24;
+  // ---- whole-history timeline: click or drag it to move through time ----
+  const oy = height - 18, oh = 26;
+  TL.x0 = x0; TL.x1 = x1; TL.y0 = oy - oh - 8; TL.y1 = oy + 8;          // remembered for the mouse handlers
+  const hover = overTimeline(mouseX, mouseY);
+  noStroke(); fill(255, hover || TL.drag ? 22 : 10); rect(x0 - 4, TL.y0, x1 - x0 + 8, TL.y1 - TL.y0, 6);
   noFill(); stroke(255, 90); strokeWeight(1);
   beginShape(); S.spark.forEach((v, j) => vertex(map(j, 0, S.spark.length - 1, x0, x1), oy - v * oh)); endShape();
+  if (TL.dates !== S.dates) {                                            // work out year ticks & famous moments once per dataset
+    TL.dates = S.dates; TL.years = []; TL.moments = [];
+    S.dates.forEach((d, j) => { const y = (d || '').slice(0, 4); if (y !== (S.dates[j - 1] || '').slice(0, 4) && +y % 5 === 0) TL.years.push([j, y]); });
+    JUMPS.forEach(([, d]) => { if (!d) return; const j = S.dates.findIndex(x => x >= d); if (j > 0) TL.moments.push(j); });
+  }
+  textSize(10); textAlign(CENTER);
+  TL.years.forEach(([j, y]) => { const x = map(j, 0, S.n - 1, x0, x1); stroke(255, 40); line(x, oy - oh, x, oy); noStroke(); fill(255, 110); text(y, x, oy + 7); });
+  noStroke(); fill(255, 140, 140, 180);
+  TL.moments.forEach(j => circle(map(j, 0, S.n - 1, x0, x1), TL.y0 + 3, 5));
   const px = map(i, 0, S.n - 1, x0, x1);
-  stroke(255, 220, 120); strokeWeight(2); line(px, oy - oh - 4, px, oy + 2);
-  noStroke();
+  stroke(255, 220, 120); strokeWeight(TL.drag ? 3 : 2); line(px, oy - oh - 4, px, oy + 2);
+  noStroke(); fill(255, 220, 120); circle(px, oy - oh - 4, TL.drag ? 11 : 8);
+  if (hover || TL.drag) {                                                // show which date you'd land on
+    const j = TL.drag ? i : rowAt(mouseX);
+    const label = S.dates[j] || '';
+    textSize(12); const w = textWidth(label) + 12, bx = constrain(TL.drag ? px : mouseX, x0 + w / 2, x1 - w / 2);
+    fill(20, 24, 44, 230); rect(bx - w / 2, TL.y0 - 24, w, 18, 5);
+    fill(255, 230, 170); textAlign(CENTER); text(label, bx, TL.y0 - 11);
+    cursor(TL.drag ? 'grabbing' : 'pointer');
+  } else {
+    cursor(ARROW);
+    fill(255, 90); textSize(10); textAlign(RIGHT); text('drag to move through time', x1, TL.y0 - 4);
+  }
+  textAlign(LEFT, BASELINE); noStroke();
+}
+
+// ---------------- timeline scrubbing (mouse / touch) ----------------
+const TL = { x0: 0, x1: 0, y0: 0, y1: 0, drag: false, dates: null, years: [], moments: [] };
+const overTimeline = (mx, my) => S.ready && mx >= TL.x0 - 6 && mx <= TL.x1 + 6 && my >= TL.y0 && my <= TL.y1;
+const rowAt = mx => Math.round(constrain(map(mx, TL.x0, TL.x1, 0, S.n - 1), 0, S.n - 1));
+function scrubTo(mx) {
+  const j = rowAt(mx);
+  if (j === S.idx) return;
+  S.idx = j;
+  S.last = S.last.map(() => null);                        // melodies restart smoothly from the new spot
+}
+function mousePressed(e) {
+  // only react to clicks on the stage itself (not on the panels, buttons or menus above it)
+  if (e && e.target && e.target.tagName !== 'CANVAS') return;
+  if (!overTimeline(mouseX, mouseY)) return;
+  TL.drag = true; scrubTo(mouseX);
+  return false;                                           // don't select text / scroll on touch
+}
+function mouseDragged() { if (TL.drag) { scrubTo(mouseX); return false; } }
+function mouseReleased() {
+  if (!TL.drag) return;
+  TL.drag = false;
+  event(`⏱ Moved to ${S.dates[S.idx] || ''}`);
 }
