@@ -666,18 +666,29 @@ $('scoreBtn').onclick = () => {
 
 $('saveBtn').onclick = async () => {
   if (!S.ready) return setStatus('Load data first.');
+  setStatus('💾 Saving…');
   const body = {
-    title: prompt('Name this performance:', 'Untitled symphony') || 'Untitled symphony',
+    title: $('perfName').value.trim() || `Curren-Sing · ${S.dates[S.idx] || 'performance'}`,
     seating: INSTRUMENTS.map((def, k) => ({ instrument: def.label, currency: S.cur[S.assign[k]].name })),
     viewFrom: S.view < 0 ? 'world' : S.names[S.view],
     at: S.dates[S.idx] || null, peakTension: Math.max(...S.world), ai: S.aiLog.slice(-20),
   };
   try {
     const res = await fetch('/api/performances', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error(res.status);
-    setStatus(`💾 Saved "${body.title}" to MongoDB`);
-  } catch {
-    setStatus('Saving needs the Python server: run "python app.py" and open http://localhost:5050');
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || res.status);
+    if (out.stored === 'local') {
+      setStatus(`💾 Saved "${body.title}" on this laptop — MongoDB isn't reachable on this Wi-Fi, it will upload automatically when it is (${out.waiting} waiting)`);
+      event(`💾 Saved "${body.title}" (will upload to MongoDB later)`);
+    } else {
+      setStatus(`💾 Saved "${body.title}" to MongoDB ✓${out.uploadedWaiting ? ` (+${out.uploadedWaiting} earlier saves uploaded)` : ''}`);
+      event(`💾 Saved "${body.title}" to MongoDB`);
+    }
+    $('perfName').value = '';
+  } catch (e) {
+    setStatus(location.protocol === 'file:'
+      ? 'Saving needs the Python server: run "python app.py" and open http://localhost:5050'
+      : `⚠️ Could not save: ${e.message}`);
   }
 };
 

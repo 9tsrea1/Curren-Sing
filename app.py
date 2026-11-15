@@ -12,6 +12,7 @@ import datetime
 import io
 import json
 import os
+import threading
 import time
 import zipfile
 
@@ -32,7 +33,7 @@ GEMINI_FALLBACKS = [m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
 uri = os.environ.get("MONGODB_URI")
-performances = MongoClient(uri)["hackathon"]["performances"] if uri else None
+performances = MongoClient(uri, serverSelectionTimeoutMS=4000, connectTimeoutMS=4000)["hackathon"]["performances"] if uri else None
 
 
 @app.get("/")
@@ -129,23 +130,94 @@ def analyse():
     return jsonify(error=last_error), 502
 
 
+# ---------- Performances: saved to MongoDB Atlas, or kept on this laptop until MongoDB is reachable ----------
+# (Some Wi-Fi networks, e.g. university ones, block MongoDB's port 27017.)
+PENDING = os.path.join(DATA_DIR, "pending_performances.json")
+_lock = threading.Lock()
+_last_fail = 0.0                    # when MongoDB was last unreachable (don't keep waiting on it)
+
+
+def _read_pending():
+    try:
+        with open(PENDING, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _write_pending(items):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(PENDING, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=1)
+
+
+def _mongo_ok():
+    return performances is not None and time.time() - _last_fail > 30
+
+
+def _flush_pending():
+    """Upload locally-kept performances once MongoDB is reachable again."""
+    global _last_fail
+    with _lock:
+        items = _read_pending()
+        if not items or not _mongo_ok():
+            return 0
+        try:
+            docs = [{**d, "createdAt": datetime.datetime.fromisoformat(d["createdAt"]), "uploadedLater": True} for d in items]
+            performances.insert_many(docs)
+            _write_pending([])
+            print(f"☁️  Uploaded {len(docs)} saved performance(s) to MongoDB")
+            return len(docs)
+        except Exception:
+            _last_fail = time.time()
+            return 0
+
+
+def _sync_loop():                   # background helper: try every 30 s
+    while True:
+        time.sleep(30)
+        _flush_pending()
+
+
 @app.post("/api/performances")
 def save_performance():
-    if performances is None:
-        return jsonify(error="MONGODB_URI missing"), 503
+    global _last_fail
     data = request.get_json(force=True) or {}
-    data["createdAt"] = datetime.datetime.now(datetime.timezone.utc)
-    result = performances.insert_one(data)
-    return jsonify(id=str(result.inserted_id))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if _mongo_ok():
+        try:
+            result = performances.insert_one({**data, "createdAt": now})
+            uploaded = _flush_pending()
+            return jsonify(stored="mongodb", id=str(result.inserted_id), uploadedWaiting=uploaded)
+        except Exception as e:
+            _last_fail = time.time()
+            print("MongoDB unreachable → keeping performance on this laptop:", type(e).__name__)
+    with _lock:                     # MongoDB not reachable → keep it locally for later
+        items = _read_pending()
+        items.append({**data, "createdAt": now.isoformat()})
+        _write_pending(items)
+    return jsonify(stored="local", waiting=len(items)), 202
 
 
 @app.get("/api/performances")
 def list_performances():
-    if performances is None:
-        return jsonify(error="MONGODB_URI missing"), 503
-    docs = list(performances.find({}, {"_id": 0}).sort("createdAt", -1).limit(20))
-    return jsonify(docs)
+    global _last_fail
+    _flush_pending()
+    local = [{**d, "local": True} for d in reversed(_read_pending())]
+    if not _mongo_ok():
+        return jsonify(items=local, mongodb=False)
+    try:
+        docs = list(performances.find({}, {"_id": 0}).sort("createdAt", -1).limit(30))
+        for d in docs:
+            if isinstance(d.get("createdAt"), datetime.datetime):
+                d["createdAt"] = d["createdAt"].isoformat()
+        return jsonify(items=local + docs, mongodb=True)
+    except Exception:
+        _last_fail = time.time()
+        return jsonify(items=local, mongodb=False)
 
 
 if __name__ == "__main__":
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":   # only in the real server process, not the auto-reloader
+        threading.Thread(target=_sync_loop, daemon=True).start()
     app.run(debug=True, port=5050)

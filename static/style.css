@@ -55,3 +55,6 @@ select option { color: #000; }
 
 .datasrc { font-size: 12px; margin: 4px 0; opacity: 0.85; }
 .datasrc summary { cursor: pointer; }
+
+#perfName { width: 100%; background: rgba(255,255,255,0.1); color: inherit; border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 8px; padding: 6px 8px; font-size: 13px; }
